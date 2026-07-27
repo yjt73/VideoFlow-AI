@@ -9,6 +9,7 @@
 client/node_modules/
 client/dist/
 server/target/
+server/.m2/
 
 mysql/data/
 mysql/logs/
