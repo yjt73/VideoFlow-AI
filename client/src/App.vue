@@ -234,6 +234,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { marked } from 'marked'
+import { apiFetch, clearToken, getToken, setToken } from './api'
 
 // --- 变量定义 ---
 const file = ref(null)
@@ -318,7 +319,7 @@ const uploadFile = async () => {
 
     // 本地保存 uploadId，刷新页面后可从服务端查询已上传编号并继续上传。
     if (uploadId) {
-      const statusRes = await fetch(`http://localhost:9090/media/upload-status?uploadId=${encodeURIComponent(uploadId)}`)
+      const statusRes = await apiFetch(`/media/upload-status?uploadId=${encodeURIComponent(uploadId)}`)
       if (statusRes.ok) {
         uploadedChunks = new Set(await statusRes.json())
       } else {
@@ -330,10 +331,9 @@ const uploadFile = async () => {
     if (!uploadId) {
       const params = new URLSearchParams({
         filename: selectedFile.name,
-        totalChunks: String(totalChunks),
-        userId: String(currentUser.value.id)
+        totalChunks: String(totalChunks)
       })
-      const initRes = await fetch(`http://localhost:9090/media/init-upload?${params}`, { method: 'POST' })
+      const initRes = await apiFetch(`/media/init-upload?${params}`, { method: 'POST' })
       const initText = await initRes.text()
       if (!initRes.ok) throw new Error(initText || 'Failed to initialize upload')
       uploadId = initText
@@ -351,7 +351,7 @@ const uploadFile = async () => {
       // Blob.slice 只取当前字节区间，并通过 multipart/form-data 发送给后端。
       formData.append('file', selectedFile.slice(index * CHUNK_SIZE, Math.min(selectedFile.size, (index + 1) * CHUNK_SIZE)))
 
-      const chunkRes = await fetch('http://localhost:9090/media/upload-chunk', {
+      const chunkRes = await apiFetch('/media/upload-chunk', {
         method: 'POST',
         body: formData
       })
@@ -360,7 +360,7 @@ const uploadFile = async () => {
 
     message.value = '分片上传完成，正在合并文件...'
     const completeParams = new URLSearchParams({ uploadId })
-    const completeRes = await fetch(`http://localhost:9090/media/complete-upload?${completeParams}`, { method: 'POST' })
+    const completeRes = await apiFetch(`/media/complete-upload?${completeParams}`, { method: 'POST' })
     if (!completeRes.ok) throw new Error(await completeRes.text() || 'Upload merge failed')
 
     localStorage.removeItem(storageKey)
@@ -396,10 +396,9 @@ const handleUrlUpload = async () => {
 
   const formData = new FormData()
   formData.append('url', videoUrl.value)
-  if (currentUser.value) formData.append('userId', currentUser.value.id)
 
   try {
-    const res = await fetch('http://localhost:9090/media/upload-url', {
+    const res = await apiFetch('/media/upload-url', {
       method: 'POST',
       body: formData
     })
@@ -430,13 +429,13 @@ const showMsg = (msg, isError = false) => {
 // 获取当前用户的媒体列表，并恢复未结束任务的轮询。
 const fetchList = async () => {
   try {
-    let url = 'http://localhost:9090/media/list'
+    let url = '/media/list'
     if (currentUser.value) {
       // 【核心修改】加一个 _t 时间戳，强制浏览器每次都发新请求，不许读缓存！
       const timestamp = new Date().getTime()
-      url += `?userId=${currentUser.value.id}&_t=${timestamp}`
+      url += `?_t=${timestamp}`
 
-      const res = await fetch(url)
+      const res = await apiFetch(url)
       const data = await res.json()
       // 倒序排列，新的在前面
       list.value = data.reverse()
@@ -452,9 +451,8 @@ const fetchList = async () => {
 const deleteItem = async (item) => {
   if (!confirm(`确认要永久删除 "${item.filename}" 吗？`)) return
   try {
-    let url = `http://localhost:9090/media/delete?id=${item.id}`
-    if (currentUser.value) url += `&userId=${currentUser.value.id}`
-    const res = await fetch(url, { method: 'DELETE' })
+    const url = `/media/delete?id=${item.id}`
+    const res = await apiFetch(url, { method: 'DELETE' })
     const text = await res.text()
     if (text === '删除成功') {
       showMsg('文件已销毁')
@@ -476,12 +474,12 @@ const formatTime = (timeStr) => {
 
 // 请求后端生成音频并触发浏览器下载。
 const downloadAudio = async (item) => {
-  const url = `http://localhost:9090/debug/download?id=${item.id}`
+  const url = `/debug/download?id=${item.id}`
   let fileName = item.filename || 'audio.mp3';
   fileName = fileName.replace(/\.[^/.]+$/, "") + ".mp3";
   try {
     showMsg('正在转码并下载...')
-    const res = await fetch(url)
+    const res = await apiFetch(url)
     if(!res.ok) throw new Error("Fail")
     const blob = await res.blob()
     const downloadUrl = window.URL.createObjectURL(blob)
@@ -517,7 +515,7 @@ const transcribe = async (id) => {
   sidebar.value.loading = true
   sidebar.value.content = "📝 提取任务已提交，正在识别语音流..."
   try {
-    await fetch(`http://localhost:9090/debug/transcribe?id=${id}`)
+    await apiFetch(`/debug/transcribe?id=${id}`)
     startPolling(id, 'text')
   } catch (e) {
     sidebar.value.content = "Error: " + e
@@ -553,7 +551,7 @@ const aiAnalyze = async (id) => {
 
   try {
     // 请求后端
-    const res = await fetch(`http://localhost:9090/debug/ai?id=${id}`)
+    const res = await apiFetch(`/debug/ai?id=${id}`)
     const text = await res.text()
 
     // 4. 【关键逻辑】检查后端返回的文本
@@ -683,7 +681,7 @@ const handleAuth = async () => {
   authMessage.value = ''
   const endpoint = authMode.value === 'login' ? '/user/login' : '/user/register'
   try {
-    const res = await fetch(`http://localhost:9090${endpoint}`, {
+    const res = await apiFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authForm.value)
@@ -691,10 +689,11 @@ const handleAuth = async () => {
     const data = await res.json()
     if (data.code === 200) {
       if (authMode.value === 'login') {
-        currentUser.value = data.userInfo
-        localStorage.setItem('user', JSON.stringify(data.userInfo))
+        currentUser.value = data.data.user
+        setToken(data.data.token)
+        localStorage.setItem('user', JSON.stringify(data.data.user))
         closeAuthModal()
-        showMsg(`欢迎回来，${data.userInfo.nickname}`)
+        showMsg(`欢迎回来，${data.data.user.nickname}`)
         fetchList()
       } else {
         authMessage.value = '注册成功，请直接登录'
@@ -716,13 +715,14 @@ const handleAuth = async () => {
 // 清除本地登录信息和用户相关页面状态。
 const logout = () => {
   currentUser.value = null
+  clearToken()
   localStorage.removeItem('user')
   list.value = []
   showMsg('已退出系统')
 }
 onMounted(() => {
   const savedUser = localStorage.getItem('user')
-  if (savedUser) {
+  if (savedUser && getToken()) {
     try {
       currentUser.value = JSON.parse(savedUser)
     } catch(e) {}

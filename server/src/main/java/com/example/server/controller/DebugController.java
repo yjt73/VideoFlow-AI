@@ -1,5 +1,6 @@
 package com.example.server.controller;
 
+import com.example.server.auth.AuthenticatedUser;
 import com.example.server.dto.AnalysisTaskMsg;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
@@ -11,9 +12,12 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate; // 【修复】导入 Redis 类
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.File;
 import java.io.IOException;
@@ -21,6 +25,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit; //导入时间单位
 
@@ -54,13 +59,18 @@ public class DebugController {
     @GetMapping("/ai")
     /** 直接触发指定媒体的 AI 分析，便于开发阶段排查问题。 */
     public String aiAnalyze(@RequestParam Long id,
-                            @RequestParam(defaultValue = "理解视频核心内容并生成结构化分析报告") String goal) {
+                            @RequestParam(defaultValue = "理解视频核心内容并生成结构化分析报告") String goal,
+                            @AuthenticationPrincipal AuthenticatedUser currentUser) {
         String activeKey = null;
 
         try {
             if (goal.isBlank() || goal.length() > 500) {
                 return "❌ 分析目标不能为空且不能超过 500 字";
             }
+            MediaFile file = mediaFileMapper.selectById(id);
+            if (file == null) return "文件不存在";
+            requireOwner(file, currentUser);
+
             // 这里演示：全局限制每分钟只能分析 10 次 (防止费用爆炸)
             String limitKey = "limit:ai:global";
             org.redisson.api.RRateLimiter rateLimiter = redissonClient.getRateLimiter(limitKey);
@@ -73,8 +83,6 @@ public class DebugController {
             }
 
             //查库校验
-            MediaFile file = mediaFileMapper.selectById(id);
-            if (file == null) return "文件不存在";
             if (file.getAiSummary() != null && file.getAiSummary().contains("正在")) {
                 return "任务已在后台运行，无需重复提交";
             }
@@ -102,6 +110,8 @@ public class DebugController {
 
             return "✅ 任务已投递至 RocketMQ！";
 
+        } catch (ResponseStatusException exception) {
+            throw exception;
         } catch (Exception e) {
             e.printStackTrace();
             if (activeKey != null) {
@@ -114,9 +124,11 @@ public class DebugController {
     //纯文字提取接口
     @GetMapping("/transcribe")
     /** 直接触发指定媒体的语音转写。 */
-    public String transcribe(@RequestParam Long id) {
+    public String transcribe(@RequestParam Long id,
+                             @AuthenticationPrincipal AuthenticatedUser currentUser) {
         MediaFile mediaFile = mediaFileMapper.selectById(id);
         if (mediaFile == null) return "❌ 找不到文件记录";
+        requireOwner(mediaFile, currentUser);
 
         // 调用异步服务
         aiService.asyncTranscribe(id);
@@ -127,9 +139,13 @@ public class DebugController {
     //下载音频接口
     @GetMapping("/download")
     /** 将媒体转换出的音频作为下载响应返回。 */
-    public ResponseEntity<Resource> download(@RequestParam Long id) throws IOException {
+    public ResponseEntity<Resource> download(@RequestParam Long id,
+                                             @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
         MediaFile mediaFile = mediaFileMapper.selectById(id);
         if (mediaFile == null) return ResponseEntity.notFound().build();
+        if (!Objects.equals(mediaFile.getUserId(), currentUser.userId())) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
 
         String inputPath = mediaFile.getFilePath();
 
@@ -157,6 +173,12 @@ public class DebugController {
                 .contentType(MediaType.parseMediaType("audio/mpeg"))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encodedName)
                 .body(resource);
+    }
+
+    private void requireOwner(MediaFile mediaFile, AuthenticatedUser currentUser) {
+        if (!Objects.equals(mediaFile.getUserId(), currentUser.userId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "无权访问他人的媒体");
+        }
     }
 
     /** 执行 FFmpeg 转换命令，并根据退出码判断是否成功。 */

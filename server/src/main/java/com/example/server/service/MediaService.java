@@ -5,6 +5,7 @@ import com.example.server.mapper.MediaFileMapper;
 import com.example.server.utils.MinioUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -75,8 +76,8 @@ public class MediaService {
         return uploadId;
     }
 
-    public Set<Integer> getUploadedChunks(String uploadId) {
-        requireUpload(uploadId);
+    public Set<Integer> getUploadedChunks(String uploadId, Long userId) {
+        requireOwnedUpload(uploadId, userId);
         Set<String> members = redisTemplate.opsForSet().members(partsKey(uploadId));
         Set<Integer> result = new TreeSet<>();
         if (members != null) {
@@ -87,12 +88,18 @@ public class MediaService {
         return result;
     }
 
-    public void uploadChunk(String uploadId, int chunkIndex, int totalChunks, MultipartFile chunk) throws IOException {
+    public void uploadChunk(
+            String uploadId,
+            int chunkIndex,
+            int totalChunks,
+            MultipartFile chunk,
+            Long userId
+    ) throws IOException {
         if (chunk == null || chunk.isEmpty()) {
             throw new IllegalArgumentException("chunk is empty");
         }
 
-        Map<Object, Object> metadata = requireUpload(uploadId);
+        Map<Object, Object> metadata = requireOwnedUpload(uploadId, userId);
         int expectedChunks = Integer.parseInt(String.valueOf(metadata.get("totalChunks")));
         if (totalChunks != expectedChunks || chunkIndex < 0 || chunkIndex >= expectedChunks) {
             throw new IllegalArgumentException("invalid chunk index or totalChunks");
@@ -106,13 +113,13 @@ public class MediaService {
         redisTemplate.expire(partsKey(uploadId), 1, TimeUnit.DAYS);
     }
 
-    public MediaFile completeChunkedUpload(String uploadId) throws Exception {
-        Map<Object, Object> metadata = requireUpload(uploadId);
+    public MediaFile completeChunkedUpload(String uploadId, Long userId) throws Exception {
+        Map<Object, Object> metadata = requireOwnedUpload(uploadId, userId);
         String filename = String.valueOf(metadata.get("filename"));
         int totalChunks = Integer.parseInt(String.valueOf(metadata.get("totalChunks")));
         Path directory = uploadDirectory(uploadId);
 
-        Set<Integer> uploadedChunks = getUploadedChunks(uploadId);
+        Set<Integer> uploadedChunks = getUploadedChunks(uploadId, userId);
         if (uploadedChunks.size() != totalChunks) {
             throw new IllegalStateException("not all chunks have been uploaded");
         }
@@ -142,9 +149,9 @@ public class MediaService {
             mediaFile.setFilePath(fileUrl);
             mediaFile.setStatus("COMPLETED");
             mediaFile.setUploadTime(LocalDateTime.now());
-            Object userId = metadata.get("userId");
-            if (userId != null) {
-                mediaFile.setUserId(Long.valueOf(String.valueOf(userId)));
+            Object storedUserId = metadata.get("userId");
+            if (storedUserId != null) {
+                mediaFile.setUserId(Long.valueOf(String.valueOf(storedUserId)));
             }
             mediaFileMapper.insert(mediaFile);
 
@@ -200,6 +207,15 @@ public class MediaService {
                 .entries(CHUNK_UPLOAD_KEY_PREFIX + uploadId);
         if (metadata.isEmpty()) {
             throw new IllegalArgumentException("uploadId does not exist or has expired");
+        }
+        return metadata;
+    }
+
+    private Map<Object, Object> requireOwnedUpload(String uploadId, Long userId) {
+        Map<Object, Object> metadata = requireUpload(uploadId);
+        Object ownerId = metadata.get("userId");
+        if (ownerId == null || !String.valueOf(userId).equals(String.valueOf(ownerId))) {
+            throw new AccessDeniedException("无权访问他人的上传任务");
         }
         return metadata;
     }
