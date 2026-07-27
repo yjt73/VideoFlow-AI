@@ -1,5 +1,8 @@
 package com.example.server.security;
 
+import com.example.server.api.ApiResponse;
+import com.example.server.api.ErrorCode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
@@ -13,6 +16,12 @@ import java.nio.charset.StandardCharsets;
 @Component
 public class RestAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
+    private final ObjectMapper objectMapper;
+
+    public RestAuthenticationEntryPoint(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
     @Override
     public void commence(
             HttpServletRequest request,
@@ -22,6 +31,9 @@ public class RestAuthenticationEntryPoint implements AuthenticationEntryPoint {
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        response.getWriter().write("{\"code\":401,\"msg\":\"未认证或令牌无效\"}");
+        objectMapper.writeValue(
+                response.getWriter(),
+                ApiResponse.error(ErrorCode.UNAUTHORIZED, "未认证或令牌无效")
+        );
     }
 }

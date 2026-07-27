@@ -319,10 +319,11 @@ const uploadFile = async () => {
 
     // 本地保存 uploadId，刷新页面后可从服务端查询已上传编号并继续上传。
     if (uploadId) {
-      const statusRes = await apiFetch(`/media/upload-status?uploadId=${encodeURIComponent(uploadId)}`)
-      if (statusRes.ok) {
-        uploadedChunks = new Set(await statusRes.json())
-      } else {
+      try {
+        uploadedChunks = new Set(
+          await apiFetch(`/media/upload-status?uploadId=${encodeURIComponent(uploadId)}`)
+        )
+      } catch {
         localStorage.removeItem(storageKey)
         uploadId = null
       }
@@ -333,10 +334,7 @@ const uploadFile = async () => {
         filename: selectedFile.name,
         totalChunks: String(totalChunks)
       })
-      const initRes = await apiFetch(`/media/init-upload?${params}`, { method: 'POST' })
-      const initText = await initRes.text()
-      if (!initRes.ok) throw new Error(initText || 'Failed to initialize upload')
-      uploadId = initText
+      uploadId = await apiFetch(`/media/init-upload?${params}`, { method: 'POST' })
       localStorage.setItem(storageKey, uploadId)
     }
 
@@ -351,17 +349,15 @@ const uploadFile = async () => {
       // Blob.slice 只取当前字节区间，并通过 multipart/form-data 发送给后端。
       formData.append('file', selectedFile.slice(index * CHUNK_SIZE, Math.min(selectedFile.size, (index + 1) * CHUNK_SIZE)))
 
-      const chunkRes = await apiFetch('/media/upload-chunk', {
+      await apiFetch('/media/upload-chunk', {
         method: 'POST',
         body: formData
       })
-      if (!chunkRes.ok) throw new Error(await chunkRes.text() || `Chunk ${index} failed`)
     }
 
     message.value = '分片上传完成，正在合并文件...'
     const completeParams = new URLSearchParams({ uploadId })
-    const completeRes = await apiFetch(`/media/complete-upload?${completeParams}`, { method: 'POST' })
-    if (!completeRes.ok) throw new Error(await completeRes.text() || 'Upload merge failed')
+    await apiFetch(`/media/complete-upload?${completeParams}`, { method: 'POST' })
 
     localStorage.removeItem(storageKey)
     showMsg('✅ 本地上传完成')
@@ -398,13 +394,10 @@ const handleUrlUpload = async () => {
   formData.append('url', videoUrl.value)
 
   try {
-    const res = await apiFetch('/media/upload-url', {
+    await apiFetch('/media/upload-url', {
       method: 'POST',
       body: formData
     })
-    // 【关键修复】现在后端会返回 500 状态码，这里能正确捕获错误了
-    const text = await res.text()
-    if (!res.ok) throw new Error(text)
 
     showMsg('✅ 链接资源已入库')
     videoUrl.value = ''
@@ -435,8 +428,7 @@ const fetchList = async () => {
       const timestamp = new Date().getTime()
       url += `?_t=${timestamp}`
 
-      const res = await apiFetch(url)
-      const data = await res.json()
+      const data = await apiFetch(url)
       // 倒序排列，新的在前面
       list.value = data.reverse()
     } else {
@@ -452,14 +444,9 @@ const deleteItem = async (item) => {
   if (!confirm(`确认要永久删除 "${item.filename}" 吗？`)) return
   try {
     const url = `/media/delete?id=${item.id}`
-    const res = await apiFetch(url, { method: 'DELETE' })
-    const text = await res.text()
-    if (text === '删除成功') {
-      showMsg('文件已销毁')
-      list.value = list.value.filter(i => i.id !== item.id)
-    } else {
-      showMsg('❌ ' + text, true)
-    }
+    await apiFetch(url, { method: 'DELETE' })
+    showMsg('文件已销毁')
+    list.value = list.value.filter(i => i.id !== item.id)
   } catch (e) {
     showMsg('❌ 删除请求失败', true)
   }
@@ -479,7 +466,7 @@ const downloadAudio = async (item) => {
   fileName = fileName.replace(/\.[^/.]+$/, "") + ".mp3";
   try {
     showMsg('正在转码并下载...')
-    const res = await apiFetch(url)
+    const res = await apiFetch(url, { raw: true })
     if(!res.ok) throw new Error("Fail")
     const blob = await res.blob()
     const downloadUrl = window.URL.createObjectURL(blob)
@@ -551,8 +538,7 @@ const aiAnalyze = async (id) => {
 
   try {
     // 请求后端
-    const res = await apiFetch(`/debug/ai?id=${id}`)
-    const text = await res.text()
+    const text = await apiFetch(`/debug/ai?id=${id}`)
 
     // 4. 【关键逻辑】检查后端返回的文本
     // 如果包含 "⚠️" (限流/锁) 或者 "❌" (报错)，说明任务被拒绝了
@@ -681,32 +667,26 @@ const handleAuth = async () => {
   authMessage.value = ''
   const endpoint = authMode.value === 'login' ? '/user/login' : '/user/register'
   try {
-    const res = await apiFetch(endpoint, {
+    const data = await apiFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authForm.value)
     })
-    const data = await res.json()
-    if (data.code === 200) {
-      if (authMode.value === 'login') {
-        currentUser.value = data.data.user
-        setToken(data.data.token)
-        localStorage.setItem('user', JSON.stringify(data.data.user))
-        closeAuthModal()
-        showMsg(`欢迎回来，${data.data.user.nickname}`)
-        fetchList()
-      } else {
-        authMessage.value = '注册成功，请直接登录'
-        authError.value = false
-        setTimeout(() => switchAuthMode(), 1000)
-      }
+    if (authMode.value === 'login') {
+      currentUser.value = data.user
+      setToken(data.token)
+      localStorage.setItem('user', JSON.stringify(data.user))
+      closeAuthModal()
+      showMsg(`欢迎回来，${data.user.nickname}`)
+      fetchList()
     } else {
-      authMessage.value = data.msg || '操作失败'
-      authError.value = true
+      authMessage.value = '注册成功，请直接登录'
+      authError.value = false
+      setTimeout(() => switchAuthMode(), 1000)
     }
   } catch (e) {
     console.error(e)
-    authMessage.value = '网络连接错误'
+    authMessage.value = e.message || '网络连接错误'
     authError.value = true
   } finally {
     authLoading.value = false

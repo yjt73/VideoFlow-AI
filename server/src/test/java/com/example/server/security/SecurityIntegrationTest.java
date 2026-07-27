@@ -23,6 +23,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 @WebMvcTest(MediaController.class)
 @Import({
@@ -65,7 +66,11 @@ class SecurityIntegrationTest {
     @Test
     void protectedEndpointRejectsAnonymousRequest() throws Exception {
         mockMvc.perform(get("/media/list"))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(401))
+                .andExpect(jsonPath("$.message").isNotEmpty())
+                .andExpect(jsonPath("$.requestId").isNotEmpty())
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     @Test
@@ -78,7 +83,10 @@ class SecurityIntegrationTest {
         mockMvc.perform(delete("/media/delete")
                         .param("id", "99")
                         .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403))
+                .andExpect(jsonPath("$.requestId").isNotEmpty())
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     @Test
@@ -89,7 +97,8 @@ class SecurityIntegrationTest {
         mockMvc.perform(post("/media/complete-upload")
                         .param("uploadId", "other-upload")
                         .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
     }
 
     private String tokenFor(Long userId) {

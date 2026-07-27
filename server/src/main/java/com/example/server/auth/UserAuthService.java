@@ -1,6 +1,8 @@
 package com.example.server.auth;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.example.server.api.BusinessException;
+import com.example.server.api.ErrorCode;
 import com.example.server.auth.dto.LoginRequest;
 import com.example.server.auth.dto.RegisterRequest;
 import com.example.server.auth.dto.UserView;
@@ -25,7 +27,7 @@ public class UserAuthService {
         LambdaQueryWrapper<User> query = new LambdaQueryWrapper<User>()
                 .eq(User::getUsername, request.username());
         if (userMapper.selectCount(query) > 0) {
-            throw new IllegalArgumentException("用户名已存在");
+            throw new BusinessException(ErrorCode.CONFLICT, "用户名已存在");
         }
 
         User user = new User();
@@ -42,7 +44,7 @@ public class UserAuthService {
                 .eq(User::getUsername, request.username());
         User user = userMapper.selectOne(query);
         if (user == null || !passwordEncoder.matches(request.password(), user.getPassword())) {
-            throw new IllegalArgumentException("账号或密码错误");
+            throw new BusinessException(ErrorCode.UNAUTHORIZED, "账号或密码错误");
         }
         return UserView.from(user);
     }

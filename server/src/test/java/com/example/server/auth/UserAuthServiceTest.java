@@ -1,6 +1,7 @@
 package com.example.server.auth;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.example.server.api.BusinessException;
 import com.example.server.auth.dto.LoginRequest;
 import com.example.server.auth.dto.RegisterRequest;
 import com.example.server.auth.dto.UserView;
@@ -66,7 +67,7 @@ class UserAuthServiceTest {
         assertThat(service.authenticate(new LoginRequest("rick", "plain-password")).username())
                 .isEqualTo("rick");
         assertThatThrownBy(() -> service.authenticate(new LoginRequest("rick", "wrong-password")))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(BusinessException.class);
     }
 
     @Test

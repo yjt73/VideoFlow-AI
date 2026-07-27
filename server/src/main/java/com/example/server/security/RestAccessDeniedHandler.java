@@ -1,5 +1,8 @@
 package com.example.server.security;
 
+import com.example.server.api.ApiResponse;
+import com.example.server.api.ErrorCode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
@@ -13,6 +16,12 @@ import java.nio.charset.StandardCharsets;
 @Component
 public class RestAccessDeniedHandler implements AccessDeniedHandler {
 
+    private final ObjectMapper objectMapper;
+
+    public RestAccessDeniedHandler(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
     @Override
     public void handle(
             HttpServletRequest request,
@@ -22,6 +31,9 @@ public class RestAccessDeniedHandler implements AccessDeniedHandler {
         response.setStatus(HttpServletResponse.SC_FORBIDDEN);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        response.getWriter().write("{\"code\":403,\"msg\":\"无权访问该资源\"}");
+        objectMapper.writeValue(
+                response.getWriter(),
+                ApiResponse.error(ErrorCode.FORBIDDEN, "无权访问该资源")
+        );
     }
 }

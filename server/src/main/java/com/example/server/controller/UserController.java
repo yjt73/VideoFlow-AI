@@ -1,6 +1,7 @@
 package com.example.server.controller;
 
 import com.example.server.auth.UserAuthService;
+import com.example.server.api.ApiResponse;
 import com.example.server.auth.dto.LoginRequest;
 import com.example.server.auth.dto.LoginView;
 import com.example.server.auth.dto.RegisterRequest;
@@ -12,9 +13,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.HashMap;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/user")
@@ -30,33 +28,13 @@ public class UserController {
     }
 
     @PostMapping("/register")
-    public Map<String, Object> register(@Valid @RequestBody RegisterRequest request) {
-        Map<String, Object> result = new HashMap<>();
-        try {
-            UserView user = userAuthService.register(request);
-            result.put("code", 200);
-            result.put("msg", "注册成功");
-            result.put("data", user);
-        } catch (IllegalArgumentException exception) {
-            result.put("code", 400);
-            result.put("msg", exception.getMessage());
-        }
-        return result;
+    public ApiResponse<UserView> register(@Valid @RequestBody RegisterRequest request) {
+        return ApiResponse.success(userAuthService.register(request));
     }
 
     @PostMapping("/login")
-    public Map<String, Object> login(@Valid @RequestBody LoginRequest request) {
-        Map<String, Object> result = new HashMap<>();
-        try {
-            UserView user = userAuthService.authenticate(request);
-            LoginView login = new LoginView(jwtService.generateToken(user), user);
-            result.put("code", 200);
-            result.put("msg", "登录成功");
-            result.put("data", login);
-        } catch (IllegalArgumentException exception) {
-            result.put("code", 401);
-            result.put("msg", exception.getMessage());
-        }
-        return result;
+    public ApiResponse<LoginView> login(@Valid @RequestBody LoginRequest request) {
+        UserView user = userAuthService.authenticate(request);
+        return ApiResponse.success(new LoginView(jwtService.generateToken(user), user));
     }
 }

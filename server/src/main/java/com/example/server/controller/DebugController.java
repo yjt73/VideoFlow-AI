@@ -1,5 +1,9 @@
 package com.example.server.controller;
 
+import com.example.server.api.ApiResponse;
+import com.example.server.api.BusinessException;
+import com.example.server.api.DependencyUnavailableException;
+import com.example.server.api.ErrorCode;
 import com.example.server.auth.AuthenticatedUser;
 import com.example.server.dto.AnalysisTaskMsg;
 import com.example.server.entity.MediaFile;
@@ -12,12 +16,10 @@ import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.data.redis.core.StringRedisTemplate; // 【修复】导入 Redis 类
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.io.File;
 import java.io.IOException;
@@ -58,17 +60,19 @@ public class DebugController {
     //AI总结接口(分布式锁 + 限流 + MQ)
     @GetMapping("/ai")
     /** 直接触发指定媒体的 AI 分析，便于开发阶段排查问题。 */
-    public String aiAnalyze(@RequestParam Long id,
-                            @RequestParam(defaultValue = "理解视频核心内容并生成结构化分析报告") String goal,
-                            @AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<String> aiAnalyze(
+            @RequestParam Long id,
+            @RequestParam(defaultValue = "理解视频核心内容并生成结构化分析报告") String goal,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
         String activeKey = null;
 
         try {
             if (goal.isBlank() || goal.length() > 500) {
-                return "❌ 分析目标不能为空且不能超过 500 字";
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "分析目标不能为空且不能超过 500 字");
             }
             MediaFile file = mediaFileMapper.selectById(id);
-            if (file == null) return "文件不存在";
+            if (file == null) throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
             requireOwner(file, currentUser);
 
             // 这里演示：全局限制每分钟只能分析 10 次 (防止费用爆炸)
@@ -79,12 +83,12 @@ public class DebugController {
 
             //尝试获取 1 个令牌
             if (!rateLimiter.tryAcquire(1)) {
-                return "⚠️ 系统繁忙(限流中)，请 1 分钟后再试！";
+                throw new BusinessException(ErrorCode.RATE_LIMITED, "系统繁忙，请稍后再试");
             }
 
             //查库校验
             if (file.getAiSummary() != null && file.getAiSummary().contains("正在")) {
-                return "任务已在后台运行，无需重复提交";
+                throw new BusinessException(ErrorCode.CONFLICT, "任务已在后台运行");
             }
 
             String contentHash = redisTemplate.opsForValue().get("media:md5:" + id);
@@ -95,7 +99,7 @@ public class DebugController {
             Boolean accepted = redisTemplate.opsForValue()
                     .setIfAbsent(activeKey, String.valueOf(id), 2, TimeUnit.HOURS);
             if (!Boolean.TRUE.equals(accepted)) {
-                return "⚠️ 相同视频正在分析，请勿重复提交！";
+                throw new BusinessException(ErrorCode.CONFLICT, "相同视频正在分析");
             }
 
             //更新状态
@@ -108,32 +112,31 @@ public class DebugController {
             AnalysisTaskMsg msg = new AnalysisTaskMsg(id, "START_ANALYSIS", contentHash, goal);
             rocketMQTemplate.convertAndSend("video-analysis-topic", msg);
 
-            return "✅ 任务已投递至 RocketMQ！";
+            return ApiResponse.success("任务已投递至 RocketMQ");
 
-        } catch (ResponseStatusException exception) {
+        } catch (BusinessException exception) {
             throw exception;
         } catch (Exception e) {
-            e.printStackTrace();
             if (activeKey != null) {
                 redisTemplate.delete(activeKey);
             }
-            return "❌ 提交失败: " + e.getMessage();
+            throw new DependencyUnavailableException("分析任务依赖暂时不可用", e);
         }
     }
 
     //纯文字提取接口
     @GetMapping("/transcribe")
     /** 直接触发指定媒体的语音转写。 */
-    public String transcribe(@RequestParam Long id,
-                             @AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<String> transcribe(@RequestParam Long id,
+                                          @AuthenticationPrincipal AuthenticatedUser currentUser) {
         MediaFile mediaFile = mediaFileMapper.selectById(id);
-        if (mediaFile == null) return "❌ 找不到文件记录";
+        if (mediaFile == null) throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
         requireOwner(mediaFile, currentUser);
 
         // 调用异步服务
         aiService.asyncTranscribe(id);
 
-        return "✅ 提取任务已后台运行！请稍后查看结果。";
+        return ApiResponse.success("提取任务已在后台运行");
     }
 
     //下载音频接口
@@ -142,15 +145,17 @@ public class DebugController {
     public ResponseEntity<Resource> download(@RequestParam Long id,
                                              @AuthenticationPrincipal AuthenticatedUser currentUser) throws IOException {
         MediaFile mediaFile = mediaFileMapper.selectById(id);
-        if (mediaFile == null) return ResponseEntity.notFound().build();
+        if (mediaFile == null) throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
         if (!Objects.equals(mediaFile.getUserId(), currentUser.userId())) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问他人的媒体");
         }
 
         String inputPath = mediaFile.getFilePath();
 
         if (!inputPath.startsWith("http")) {
-            if (!new File(inputPath).exists()) return ResponseEntity.notFound().build();
+            if (!new File(inputPath).exists()) {
+                throw new BusinessException(ErrorCode.NOT_FOUND, "媒体源文件不存在");
+            }
         }
 
         String outputMp3Path = System.getProperty("java.io.tmpdir") + File.separator + "download_" + UUID.randomUUID() + ".mp3";
@@ -158,7 +163,7 @@ public class DebugController {
 
         boolean success = runFfmpeg(inputPath, outputMp3Path);
 
-        if (!success) return ResponseEntity.internalServerError().build();
+        if (!success) throw new DependencyUnavailableException("音频转码失败");
 
         File mp3File = new File(outputMp3Path);
         Resource resource = new FileSystemResource(mp3File);
@@ -177,7 +182,7 @@ public class DebugController {
 
     private void requireOwner(MediaFile mediaFile, AuthenticatedUser currentUser) {
         if (!Objects.equals(mediaFile.getUserId(), currentUser.userId())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "无权访问他人的媒体");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问他人的媒体");
         }
     }
 

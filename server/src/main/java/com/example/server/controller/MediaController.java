@@ -1,6 +1,10 @@
 package com.example.server.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.example.server.api.ApiResponse;
+import com.example.server.api.BusinessException;
+import com.example.server.api.DependencyUnavailableException;
+import com.example.server.api.ErrorCode;
 import com.example.server.auth.AuthenticatedUser;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
@@ -11,8 +15,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -54,82 +56,54 @@ public class MediaController {
     /*做了两件事
     1.为redis中注入key为upload:chunked:{uploadId}的键值对
     2.创建路径为/tmp/dovideo-chunks/550e8400-e29b-41d4-a716-446655440000的文件夹*/
-    public ResponseEntity<String> initUpload(@RequestParam String filename,
-                                             @RequestParam int totalChunks,
-                                             @AuthenticationPrincipal AuthenticatedUser currentUser) {
-        try {
-            return ResponseEntity.ok(mediaService.initChunkedUpload(
-                    filename,
-                    totalChunks,
-                    currentUser.userId()
-            ));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Failed to initialize upload");
-        }
+    public ApiResponse<String> initUpload(@RequestParam String filename,
+                                          @RequestParam int totalChunks,
+                                          @AuthenticationPrincipal AuthenticatedUser currentUser) throws Exception {
+        return ApiResponse.success(mediaService.initChunkedUpload(
+                filename,
+                totalChunks,
+                currentUser.userId()
+        ));
     }
 
     @GetMapping("/upload-status")
     /** 返回指定上传任务已经完成的分片编号。 */
-    public ResponseEntity<?> uploadStatus(@RequestParam String uploadId,
-                                          @AuthenticationPrincipal AuthenticatedUser currentUser) {
-        try {
-            Set<Integer> uploadedChunks = mediaService.getUploadedChunks(uploadId, currentUser.userId());
-            return ResponseEntity.ok(uploadedChunks);
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        }
+    public ApiResponse<Set<Integer>> uploadStatus(
+            @RequestParam String uploadId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        return ApiResponse.success(mediaService.getUploadedChunks(uploadId, currentUser.userId()));
     }
 
     @PostMapping("/upload-chunk")
     /** 接收并保存一个由前端切出的文件分片。 */
-    public ResponseEntity<String> uploadChunk(@RequestParam String uploadId,
-                                              @RequestParam int chunkIndex,
-                                              @RequestParam int totalChunks,
-                                              @RequestParam("file") MultipartFile file,
-                                              @AuthenticationPrincipal AuthenticatedUser currentUser) {
-        try {
-            mediaService.uploadChunk(uploadId, chunkIndex, totalChunks, file, currentUser.userId());
-            return ResponseEntity.ok("Chunk uploaded");
-        } catch (AccessDeniedException e) {
-            throw e;
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Chunk upload failed");
-        }
+    public ApiResponse<String> uploadChunk(@RequestParam String uploadId,
+                                           @RequestParam int chunkIndex,
+                                           @RequestParam int totalChunks,
+                                           @RequestParam("file") MultipartFile file,
+                                           @AuthenticationPrincipal AuthenticatedUser currentUser) throws Exception {
+        mediaService.uploadChunk(uploadId, chunkIndex, totalChunks, file, currentUser.userId());
+        return ApiResponse.success("Chunk uploaded");
     }
 
     @PostMapping("/complete-upload")
     /** 合并全部分片，完成对象存储和数据库持久化。 */
-    public ResponseEntity<String> completeUpload(@RequestParam String uploadId,
-                                                 @AuthenticationPrincipal AuthenticatedUser currentUser) {
-        try {
-            mediaService.completeChunkedUpload(uploadId, currentUser.userId());
-            return ResponseEntity.ok("Upload success");
-        } catch (AccessDeniedException e) {
-            throw e;
-        } catch (IllegalArgumentException | IllegalStateException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Upload merge failed");
-        }
+    public ApiResponse<String> completeUpload(@RequestParam String uploadId,
+                                              @AuthenticationPrincipal AuthenticatedUser currentUser) throws Exception {
+        mediaService.completeChunkedUpload(uploadId, currentUser.userId());
+        return ApiResponse.success("Upload success");
     }
 
 
     @PostMapping("/upload")
     /** 兼容小文件场景的一次性完整文件上传接口。 */
-    public ResponseEntity<String> upload(@RequestParam("file") MultipartFile file,
-                                         @AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<String> upload(@RequestParam("file") MultipartFile file,
+                                      @AuthenticationPrincipal AuthenticatedUser currentUser) {
         if (file == null || file.isEmpty()) {
-            return ResponseEntity.badRequest().body("Upload failed: file is empty");
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "上传文件不能为空");
         }
         if (mediaFileMapper == null) {
-            return ResponseEntity.status(500).body("Upload failed: database not ready");
+            throw new DependencyUnavailableException("数据库尚未就绪");
         }
         try {
             String md5 = mediaService.calculateMd5(file);
@@ -152,26 +126,25 @@ public class MediaController {
             redisTemplate.delete(cacheKey);
             System.out.println("Cache cleared: " + cacheKey);
 
-            return ResponseEntity.ok("Upload success");
+            return ApiResponse.success("Upload success");
 
         } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Upload failed: " + e.getMessage());
+            throw new DependencyUnavailableException("文件上传依赖暂时不可用", e);
         }
     }
 
     @PostMapping("/upload-url")
     /** 下载外部视频链接并将文件转存到对象存储。 */
-    public org.springframework.http.ResponseEntity<String> uploadUrl(@RequestParam("url") String url,
-                                                                     @AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<String> uploadUrl(@RequestParam("url") String url,
+                                         @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        if (url == null || url.isBlank()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "URL 不能为空");
+        }
+        if (mediaFileMapper == null) {
+            throw new DependencyUnavailableException("数据库尚未就绪");
+        }
         File tempFile = null;
         try {
-            if (url == null || url.isBlank()) {
-                return org.springframework.http.ResponseEntity.badRequest().body("Upload failed: url is empty");
-            }
-            if (mediaFileMapper == null) {
-                return org.springframework.http.ResponseEntity.status(500).body("Upload failed: database not ready");
-            }
             System.out.println("Received upload url: " + url);
 
             tempFile = ytDlpUtils.downloadVideo(url);
@@ -194,11 +167,10 @@ public class MediaController {
             redisTemplate.delete(cacheKey);
             System.out.println("Cache cleared: " + cacheKey);
 
-            return org.springframework.http.ResponseEntity.ok("Upload success");
+            return ApiResponse.success("Upload success");
 
         } catch (Exception e) {
-            e.printStackTrace();
-            return org.springframework.http.ResponseEntity.status(500).body("Upload failed: " + e.getMessage());
+            throw new DependencyUnavailableException("链接下载或存储服务暂时不可用", e);
         } finally {
             if (tempFile != null && tempFile.exists()) {
                 tempFile.delete();
@@ -208,7 +180,7 @@ public class MediaController {
 
     @GetMapping("/list")
     /** 查询当前用户可见的媒体文件列表。 */
-    public List<MediaFile> getList(@AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<List<MediaFile>> getList(@AuthenticationPrincipal AuthenticatedUser currentUser) {
         Long userId = currentUser.userId();
         String cacheKey = "media:list:user:" + userId;
 
@@ -216,7 +188,9 @@ public class MediaController {
             String json = redisTemplate.opsForValue().get(cacheKey);
             if (json != null) {
                 System.out.println("命中 Redis 缓存，直接返回！");
-                return objectMapper.readValue(json, new TypeReference<List<MediaFile>>(){});
+                return ApiResponse.success(
+                        objectMapper.readValue(json, new TypeReference<List<MediaFile>>() {})
+                );
             }
         } catch (Exception e) {
             System.err.println("Redis 读取失败: " + e.getMessage());
@@ -234,22 +208,22 @@ public class MediaController {
             e.printStackTrace();
         }
 
-        return list;
+        return ApiResponse.success(list);
     }
 
     //删除接口
     @DeleteMapping("/delete")
     /** 删除媒体数据库记录及对象存储中的对应文件。 */
-    public ResponseEntity<String> delete(@RequestParam("id") Long id,
-                                         @AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<String> delete(@RequestParam("id") Long id,
+                                      @AuthenticationPrincipal AuthenticatedUser currentUser) {
 
         MediaFile media = mediaFileMapper.selectById(id);
         if (media == null) {
-            return ResponseEntity.notFound().build();
+            throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
         }
 
         if (!Objects.equals(media.getUserId(), currentUser.userId())) {
-            return ResponseEntity.status(403).body("无权删除他人的文件");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "无权删除他人的媒体");
         }
 
         if (media.getFilePath() != null && media.getFilePath().startsWith("http")) {
@@ -264,6 +238,6 @@ public class MediaController {
             System.out.println("缓存已清除: " + cacheKey);
         }
 
-        return ResponseEntity.ok("删除成功");
+        return ApiResponse.success("删除成功");
     }
 }
