@@ -5,6 +5,9 @@ import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
 import com.example.server.service.MediaService;
+import com.example.server.task.persistence.AnalysisTaskFailureMapper;
+import com.example.server.task.persistence.AnalysisTaskMapper;
+import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.utils.MinioUtils;
 import com.example.server.utils.YtDlpUtils;
 import org.junit.jupiter.api.Test;
@@ -62,6 +65,12 @@ class SecurityIntegrationTest {
 
     @MockBean
     private MediaService mediaService;
+    @MockBean
+    private AnalysisTaskMapper analysisTaskMapper;
+    @MockBean
+    private OutboxEventMapper outboxEventMapper;
+    @MockBean
+    private AnalysisTaskFailureMapper analysisTaskFailureMapper;
 
     @Test
     void protectedEndpointRejectsAnonymousRequest() throws Exception {

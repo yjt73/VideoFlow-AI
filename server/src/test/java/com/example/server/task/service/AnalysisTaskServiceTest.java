@@ -7,7 +7,10 @@ import com.example.server.mapper.MediaFileMapper;
 import com.example.server.task.api.AnalysisTaskCreatedView;
 import com.example.server.task.domain.AnalysisTask;
 import com.example.server.task.domain.AnalysisTaskStatus;
+import com.example.server.task.domain.OutboxEvent;
 import com.example.server.task.persistence.AnalysisTaskMapper;
+import com.example.server.task.persistence.OutboxEventMapper;
+import com.example.server.task.outbox.OutboxEventFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -26,18 +29,30 @@ class AnalysisTaskServiceTest {
 
     private MediaFileMapper mediaFileMapper;
     private AnalysisTaskMapper taskMapper;
+    private OutboxEventMapper outboxEventMapper;
+    private OutboxEventFactory outboxEventFactory;
     private AnalysisTaskService service;
 
     @BeforeEach
     void setUp() {
         mediaFileMapper = mock(MediaFileMapper.class);
         taskMapper = mock(AnalysisTaskMapper.class);
-        service = new AnalysisTaskService(mediaFileMapper, taskMapper);
+        outboxEventMapper = mock(OutboxEventMapper.class);
+        outboxEventFactory = mock(OutboxEventFactory.class);
+        service = new AnalysisTaskService(
+                mediaFileMapper,
+                taskMapper,
+                outboxEventMapper,
+                outboxEventFactory
+        );
     }
 
     @Test
     void createsAPendingTaskWithAGlobalUuid() {
         when(mediaFileMapper.selectById(7L)).thenReturn(media(7L, 3L));
+        OutboxEvent outboxEvent = new OutboxEvent();
+        when(outboxEventFactory.analysisRequested(any()))
+                .thenReturn(outboxEvent);
 
         AnalysisTaskCreatedView created = service.create(
                 7L,
@@ -53,6 +68,7 @@ class AnalysisTaskServiceTest {
         assertThat(taskCaptor.getValue().getMediaId()).isEqualTo(7L);
         assertThat(taskCaptor.getValue().getUserId()).isEqualTo(3L);
         assertThat(taskCaptor.getValue().getProgress()).isZero();
+        verify(outboxEventMapper).insert(outboxEvent);
     }
 
     @Test

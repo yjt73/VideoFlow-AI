@@ -11,6 +11,9 @@ import com.example.server.security.RestAccessDeniedHandler;
 import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
 import com.example.server.service.MediaService;
+import com.example.server.task.persistence.AnalysisTaskFailureMapper;
+import com.example.server.task.persistence.AnalysisTaskMapper;
+import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.utils.MinioUtils;
 import com.example.server.utils.YtDlpUtils;
 import org.junit.jupiter.api.Test;
@@ -65,6 +68,12 @@ class MediaUploadControllerTest {
     private YtDlpUtils ytDlpUtils;
     @MockBean
     private MediaService mediaService;
+    @MockBean
+    private AnalysisTaskMapper analysisTaskMapper;
+    @MockBean
+    private OutboxEventMapper outboxEventMapper;
+    @MockBean
+    private AnalysisTaskFailureMapper analysisTaskFailureMapper;
 
     @Test
     void checksUploadForAuthenticatedUser() throws Exception {

@@ -11,6 +11,8 @@ import com.example.server.task.domain.AnalysisTask;
 import com.example.server.task.domain.AnalysisTaskStatus;
 import com.example.server.task.domain.AnalysisTaskType;
 import com.example.server.task.persistence.AnalysisTaskMapper;
+import com.example.server.task.persistence.OutboxEventMapper;
+import com.example.server.task.outbox.OutboxEventFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,13 +28,19 @@ public class AnalysisTaskService {
 
     private final MediaFileMapper mediaFileMapper;
     private final AnalysisTaskMapper taskMapper;
+    private final OutboxEventMapper outboxEventMapper;
+    private final OutboxEventFactory outboxEventFactory;
 
     public AnalysisTaskService(
             MediaFileMapper mediaFileMapper,
-            AnalysisTaskMapper taskMapper
+            AnalysisTaskMapper taskMapper,
+            OutboxEventMapper outboxEventMapper,
+            OutboxEventFactory outboxEventFactory
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.taskMapper = taskMapper;
+        this.outboxEventMapper = outboxEventMapper;
+        this.outboxEventFactory = outboxEventFactory;
     }
 
     @Transactional
@@ -66,6 +74,7 @@ public class AnalysisTaskService {
         task.setCreatedAt(now);
         task.setUpdatedAt(now);
         taskMapper.insert(task);
+        outboxEventMapper.insert(outboxEventFactory.analysisRequested(task));
 
         return new AnalysisTaskCreatedView(
                 task.getTaskId(),
