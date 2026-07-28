@@ -41,19 +41,22 @@ public class AnalysisTaskService {
     private final OutboxEventMapper outboxEventMapper;
     private final OutboxEventFactory outboxEventFactory;
     private final AnalysisTaskStateService stateService;
+    private final AnalysisTaskAdmissionGuard admissionGuard;
 
     public AnalysisTaskService(
             MediaFileMapper mediaFileMapper,
             AnalysisTaskMapper taskMapper,
             OutboxEventMapper outboxEventMapper,
             OutboxEventFactory outboxEventFactory,
-            AnalysisTaskStateService stateService
+            AnalysisTaskStateService stateService,
+            AnalysisTaskAdmissionGuard admissionGuard
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.taskMapper = taskMapper;
         this.outboxEventMapper = outboxEventMapper;
         this.outboxEventFactory = outboxEventFactory;
         this.stateService = stateService;
+        this.admissionGuard = admissionGuard;
     }
 
     @Transactional
@@ -69,6 +72,7 @@ public class AnalysisTaskService {
         if (!Objects.equals(media.getUserId(), userId)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "无权分析他人的媒体");
         }
+        admissionGuard.check();
 
         String normalizedGoal = normalizeGoal(userGoal);
         LocalDateTime now = LocalDateTime.now();

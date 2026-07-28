@@ -32,6 +32,7 @@ class AnalysisTaskServiceTest {
     private OutboxEventMapper outboxEventMapper;
     private OutboxEventFactory outboxEventFactory;
     private AnalysisTaskStateService stateService;
+    private AnalysisTaskAdmissionGuard admissionGuard;
     private AnalysisTaskService service;
 
     @BeforeEach
@@ -41,12 +42,14 @@ class AnalysisTaskServiceTest {
         outboxEventMapper = mock(OutboxEventMapper.class);
         outboxEventFactory = mock(OutboxEventFactory.class);
         stateService = mock(AnalysisTaskStateService.class);
+        admissionGuard = mock(AnalysisTaskAdmissionGuard.class);
         service = new AnalysisTaskService(
                 mediaFileMapper,
                 taskMapper,
                 outboxEventMapper,
                 outboxEventFactory,
-                stateService
+                stateService,
+                admissionGuard
         );
     }
 
@@ -72,6 +75,7 @@ class AnalysisTaskServiceTest {
         assertThat(taskCaptor.getValue().getUserId()).isEqualTo(3L);
         assertThat(taskCaptor.getValue().getProgress()).isZero();
         verify(outboxEventMapper).insert(outboxEvent);
+        verify(admissionGuard).check();
     }
 
     @Test

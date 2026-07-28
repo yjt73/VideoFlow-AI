@@ -5,7 +5,6 @@ import com.example.server.api.BusinessException;
 import com.example.server.api.DependencyUnavailableException;
 import com.example.server.api.ErrorCode;
 import com.example.server.auth.AuthenticatedUser;
-import com.example.server.dto.AnalysisTaskMsg;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.AiService;
@@ -14,7 +13,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
-import org.springframework.data.redis.core.StringRedisTemplate; // 【修复】导入 Redis 类
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -47,82 +45,6 @@ public class DebugController {
     @Autowired
     private AiService aiService;
 
-
-    @Autowired
-    private StringRedisTemplate redisTemplate;
-
-    @Autowired
-    private org.apache.rocketmq.spring.core.RocketMQTemplate rocketMQTemplate;
-
-    @Autowired
-    private org.redisson.api.RedissonClient redissonClient;
-
-    //AI总结接口(分布式锁 + 限流 + MQ)
-    @GetMapping("/ai")
-    /** 直接触发指定媒体的 AI 分析，便于开发阶段排查问题。 */
-    public ApiResponse<String> aiAnalyze(
-            @RequestParam Long id,
-            @RequestParam(defaultValue = "理解视频核心内容并生成结构化分析报告") String goal,
-            @AuthenticationPrincipal AuthenticatedUser currentUser
-    ) {
-        String activeKey = null;
-
-        try {
-            if (goal.isBlank() || goal.length() > 500) {
-                throw new BusinessException(ErrorCode.BAD_REQUEST, "分析目标不能为空且不能超过 500 字");
-            }
-            MediaFile file = mediaFileMapper.selectById(id);
-            if (file == null) throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
-            requireOwner(file, currentUser);
-
-            // 这里演示：全局限制每分钟只能分析 10 次 (防止费用爆炸)
-            String limitKey = "limit:ai:global";
-            org.redisson.api.RRateLimiter rateLimiter = redissonClient.getRateLimiter(limitKey);
-            //初始化：每 1 分钟产生 10 个令牌 (RateType.OVERALL 全局, OVER_CLIENT 是单机)
-            rateLimiter.trySetRate(org.redisson.api.RateType.OVERALL, 10, 1, org.redisson.api.RateIntervalUnit.MINUTES);
-
-            //尝试获取 1 个令牌
-            if (!rateLimiter.tryAcquire(1)) {
-                throw new BusinessException(ErrorCode.RATE_LIMITED, "系统繁忙，请稍后再试");
-            }
-
-            //查库校验
-            if (file.getAiSummary() != null && file.getAiSummary().contains("正在")) {
-                throw new BusinessException(ErrorCode.CONFLICT, "任务已在后台运行");
-            }
-
-            String contentHash = redisTemplate.opsForValue().get("media:md5:" + id);
-            if (contentHash == null || !contentHash.matches("[a-f0-9]{32}")) {
-                contentHash = "media-" + id;
-            }
-            activeKey = "analysis:active:" + contentHash;
-            Boolean accepted = redisTemplate.opsForValue()
-                    .setIfAbsent(activeKey, String.valueOf(id), 2, TimeUnit.HOURS);
-            if (!Boolean.TRUE.equals(accepted)) {
-                throw new BusinessException(ErrorCode.CONFLICT, "相同视频正在分析");
-            }
-
-            //更新状态
-            file.setAiSummary("[MQ] 已进入消息队列，等待调度...");
-            mediaFileMapper.updateById(file);
-            String userIdKey = (file.getUserId() == null) ? "anon" : String.valueOf(file.getUserId());
-            redisTemplate.delete("media:list:user:" + userIdKey);
-
-            //发送消息
-            AnalysisTaskMsg msg = new AnalysisTaskMsg(id, "START_ANALYSIS", contentHash, goal);
-            rocketMQTemplate.convertAndSend("video-analysis-topic", msg);
-
-            return ApiResponse.success("任务已投递至 RocketMQ");
-
-        } catch (BusinessException exception) {
-            throw exception;
-        } catch (Exception e) {
-            if (activeKey != null) {
-                redisTemplate.delete(activeKey);
-            }
-            throw new DependencyUnavailableException("分析任务依赖暂时不可用", e);
-        }
-    }
 
     //纯文字提取接口
     @GetMapping("/transcribe")

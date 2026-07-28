@@ -31,17 +31,20 @@ public class OutboxPublisher {
     private final RocketMQTemplate rocketMQTemplate;
     private final AnalysisTaskStateService stateService;
     private final int batchSize;
+    private final int retentionDays;
 
     public OutboxPublisher(
             OutboxEventMapper eventMapper,
             RocketMQTemplate rocketMQTemplate,
             AnalysisTaskStateService stateService,
-            @Value("${analysis.outbox.batch-size:50}") int batchSize
+            @Value("${analysis.outbox.batch-size:50}") int batchSize,
+            @Value("${analysis.outbox.retention-days:7}") int retentionDays
     ) {
         this.eventMapper = eventMapper;
         this.rocketMQTemplate = rocketMQTemplate;
         this.stateService = stateService;
         this.batchSize = batchSize;
+        this.retentionDays = retentionDays;
     }
 
     @Scheduled(fixedDelayString = "${analysis.outbox.publish-delay-ms:1000}")
@@ -56,6 +59,21 @@ public class OutboxPublisher {
         for (OutboxEvent event : events) {
             publish(event);
         }
+    }
+
+    @Scheduled(
+            fixedDelayString =
+                    "${analysis.outbox.cleanup-delay-ms:86400000}"
+    )
+    public void cleanupPublishedEvents() {
+        eventMapper.delete(
+                new LambdaQueryWrapper<OutboxEvent>()
+                        .eq(OutboxEvent::getStatus, OutboxStatus.PUBLISHED)
+                        .lt(
+                                OutboxEvent::getPublishedAt,
+                                LocalDateTime.now().minusDays(retentionDays)
+                        )
+        );
     }
 
     private void publish(OutboxEvent event) {

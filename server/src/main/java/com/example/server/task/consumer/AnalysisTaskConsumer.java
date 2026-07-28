@@ -9,6 +9,8 @@ import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.service.AnalysisTaskStateService;
 import com.example.server.task.service.TaskProgressUpdate;
 import com.example.server.task.service.TaskFailureRecorder;
+import com.example.server.task.service.AnalysisTaskCompletionService;
+import com.example.server.task.service.AiAnalysisResult;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -36,6 +38,10 @@ import static com.example.server.task.domain.AnalysisTaskStatus.SUCCESS;
 @RocketMQMessageListener(
         topic = "video-analysis-topic",
         consumerGroup = "video-analysis-v3-group",
+        consumeThreadNumber = 4,
+        consumeThreadMax = 8,
+        consumeTimeout = 10,
+        awaitTerminationMillisWhenShutdown = 30000,
         maxReconsumeTimes = 3
 )
 public class AnalysisTaskConsumer implements RocketMQListener<String> {
@@ -50,6 +56,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
     private final AnalysisTaskMapper taskMapper;
     private final AnalysisTaskStateService stateService;
     private final TaskFailureRecorder failureRecorder;
+    private final AnalysisTaskCompletionService completionService;
     private final RedissonClient redissonClient;
     private final TaskExceptionClassifier exceptionClassifier;
 
@@ -59,6 +66,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
             AnalysisTaskMapper taskMapper,
             AnalysisTaskStateService stateService,
             TaskFailureRecorder failureRecorder,
+            AnalysisTaskCompletionService completionService,
             RedissonClient redissonClient,
             TaskExceptionClassifier exceptionClassifier
     ) {
@@ -67,6 +75,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
         this.taskMapper = taskMapper;
         this.stateService = stateService;
         this.failureRecorder = failureRecorder;
+        this.completionService = completionService;
         this.redissonClient = redissonClient;
         this.exceptionClassifier = exceptionClassifier;
     }
@@ -84,7 +93,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
         );
         boolean acquired = false;
         try {
-            acquired = lock.tryLock(0, 300, TimeUnit.SECONDS);
+            acquired = lock.tryLock(0, -1, TimeUnit.SECONDS);
             if (!acquired) {
                 log.info(
                         "event=analysis_duplicate_inflight taskId={}",
@@ -131,12 +140,12 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
         }
 
         try {
-            aiService.analyze(message.mediaId(), message.userGoal());
-            stateService.transition(
+            AiAnalysisResult result =
+                    aiService.analyze(message.mediaId(), message.userGoal());
+            completionService.complete(
                     message.taskId(),
-                    Set.of(RUNNING),
-                    SUCCESS,
-                    TaskProgressUpdate.reset(100, "COMPLETED")
+                    message.mediaId(),
+                    result
             );
         } catch (RuntimeException failure) {
             handleFailure(task, failure, rawMessage);

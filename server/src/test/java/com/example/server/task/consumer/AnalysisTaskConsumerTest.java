@@ -2,12 +2,16 @@ package com.example.server.task.consumer;
 
 import com.example.server.service.AiService;
 import com.example.server.api.DependencyUnavailableException;
+import com.example.server.api.BusinessException;
+import com.example.server.api.ErrorCode;
 import com.example.server.task.domain.AnalysisTask;
 import com.example.server.task.domain.AnalysisTaskStatus;
 import com.example.server.task.mq.AnalysisTaskMessage;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.service.AnalysisTaskStateService;
 import com.example.server.task.service.TaskFailureRecorder;
+import com.example.server.task.service.AnalysisTaskCompletionService;
+import com.example.server.task.service.AiAnalysisResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,6 +39,7 @@ class AnalysisTaskConsumerTest {
     private AnalysisTaskMapper taskMapper;
     private AnalysisTaskStateService stateService;
     private TaskFailureRecorder failureRecorder;
+    private AnalysisTaskCompletionService completionService;
     private RedissonClient redissonClient;
     private RLock lock;
     private AnalysisTaskConsumer consumer;
@@ -45,11 +50,12 @@ class AnalysisTaskConsumerTest {
         taskMapper = mock(AnalysisTaskMapper.class);
         stateService = mock(AnalysisTaskStateService.class);
         failureRecorder = mock(TaskFailureRecorder.class);
+        completionService = mock(AnalysisTaskCompletionService.class);
         redissonClient = mock(RedissonClient.class);
         lock = mock(RLock.class);
         when(redissonClient.getLock("lock:analysis:task:task-1"))
                 .thenReturn(lock);
-        when(lock.tryLock(0, 300, TimeUnit.SECONDS)).thenReturn(true);
+        when(lock.tryLock(0, -1, TimeUnit.SECONDS)).thenReturn(true);
         when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(stateService.transition(
                 eq("task-1"),
@@ -63,6 +69,7 @@ class AnalysisTaskConsumerTest {
                 taskMapper,
                 stateService,
                 failureRecorder,
+                completionService,
                 redissonClient,
                 new TaskExceptionClassifier()
         );
@@ -71,6 +78,8 @@ class AnalysisTaskConsumerTest {
     @Test
     void locksByTaskIdAndCompletesEligibleTaskSynchronously() {
         when(taskMapper.selectOne(any())).thenReturn(task(QUEUED));
+        AiAnalysisResult result = new AiAnalysisResult("text", "summary");
+        when(aiService.analyze(9L, "总结重点")).thenReturn(result);
 
         consumer.onMessage(jsonMessage());
 
@@ -81,12 +90,7 @@ class AnalysisTaskConsumerTest {
                 eq(RUNNING),
                 any()
         );
-        verify(stateService).transition(
-                eq("task-1"),
-                eq(Set.of(RUNNING)),
-                eq(SUCCESS),
-                any()
-        );
+        verify(completionService).complete("task-1", 9L, result);
         verify(lock).unlock();
     }
 
@@ -120,6 +124,30 @@ class AnalysisTaskConsumerTest {
                 eq("RETRYABLE"),
                 eq(1),
                 eq("RETRYABLE_ERROR"),
+                any(),
+                eq(jsonMessage())
+        );
+    }
+
+    @Test
+    void marksPermanentFailuresWithoutRequestingMqRetry() {
+        when(taskMapper.selectOne(any())).thenReturn(task(QUEUED));
+        doThrow(new BusinessException(ErrorCode.BAD_REQUEST, "invalid goal"))
+                .when(aiService).analyze(9L, "总结重点");
+
+        consumer.onMessage(jsonMessage());
+
+        verify(stateService).transition(
+                eq("task-1"),
+                eq(Set.of(RUNNING)),
+                eq(AnalysisTaskStatus.FAILED),
+                any()
+        );
+        verify(failureRecorder).record(
+                eq("task-1"),
+                eq("PERMANENT"),
+                eq(0),
+                eq("PERMANENT_ERROR"),
                 any(),
                 eq(jsonMessage())
         );

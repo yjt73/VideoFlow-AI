@@ -2,6 +2,8 @@ package com.example.server.service;
 
 import com.example.server.dto.AgentState;
 import com.example.server.dto.VideoContext;
+import com.example.server.api.BusinessException;
+import com.example.server.api.ErrorCode;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.strategy.AiAnalysisStrategy;
@@ -10,6 +12,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import com.example.server.task.service.AiAnalysisResult;
 
 @Service
 public class AiService {
@@ -31,51 +34,21 @@ public class AiService {
     @Autowired
     private AgentLoopService agentLoopService;
 
-    public void analyze(Long mediaId, String userGoal) {
+    public AiAnalysisResult analyze(Long mediaId, String userGoal) {
         System.out.println(" [线程池] 开始处理任务，ID: " + mediaId);
 
         MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null) return;
-
-        try {
-            // ASR + 场景关键帧 OCR 按时间轴合并为统一上下文
-            VideoContext videoContext = videoContextService.build(mediaFile.getFilePath(), userGoal);
-            mediaFile.setTranscriptText(videoContext.transcriptText());
-
-            // Planner -> Executor -> Critic，最多两轮后强制结束
-            AgentState agentState = agentLoopService.run(videoContext);
-            mediaFile.setAiSummary(agentState.result().toMarkdown());
-
-            // 3. 保存数据库 (这一步你已经成功了)
-            mediaFileMapper.updateById(mediaFile);
-
-
-            // 1. 拼装缓存 Key (必须和 MediaController 里的逻辑完全一致！)
-            // Controller 里是: "media:list:user:" + (userId == null ? "anon" : userId)
-            String userIdStr = (mediaFile.getUserId() == null) ? "anon" : String.valueOf(mediaFile.getUserId());
-            String cacheKey = "media:list:user:" + userIdStr;
-
-            // 2. 删除用户的媒体列表缓存，更新用户的列表缓存
-            Boolean deleteResult = redisTemplate.delete(cacheKey);
-
-            // 3. 打印显眼日志 (请在黑窗口找这句话！！！)
-            if (Boolean.TRUE.equals(deleteResult)) {
-                System.out.println(" [线程池] 缓存清除成功！Key: " + cacheKey);
-            } else {
-                System.out.println("⚠️ [线程池] 缓存不存在或清除失败 (但这不影响新数据写入)，Key: " + cacheKey);
-            }
-
-            System.out.println("✅ [线程池] 任务全部完成，前端轮询将在下一次命中新数据。");
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            System.err.println("❌ [线程池] 任务失败: " + e.getMessage());
-
-            // 失败也要删缓存，否则前端会一直转圈看不到“失败”两个字
-            String userIdStr = (mediaFile.getUserId() == null) ? "anon" : String.valueOf(mediaFile.getUserId());
-            redisTemplate.delete("media:list:user:" + userIdStr);
-            throw new IllegalStateException("AI analysis failed", e);
+        if (mediaFile == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
         }
+
+        VideoContext videoContext =
+                videoContextService.build(mediaFile.getFilePath(), userGoal);
+        AgentState agentState = agentLoopService.run(videoContext);
+        return new AiAnalysisResult(
+                videoContext.transcriptText(),
+                agentState.result().toMarkdown()
+        );
     }
 
 

@@ -38,7 +38,8 @@ class OutboxPublisherTest {
                 eventMapper,
                 rocketMQTemplate,
                 stateService,
-                50
+                50,
+                7
         );
     }
 
@@ -80,6 +81,13 @@ class OutboxPublisherTest {
         assertThat(captor.getValue().getLastError())
                 .contains("broker unavailable");
         assertThat(captor.getValue().getNextAttemptAt()).isAfter(before);
+    }
+
+    @Test
+    void deletesPublishedEventsAfterTheRetentionPeriod() {
+        publisher.cleanupPublishedEvents();
+
+        verify(eventMapper).delete(any());
     }
 
     private OutboxEvent pendingEvent() {
