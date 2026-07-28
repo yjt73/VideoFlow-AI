@@ -23,6 +23,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -145,12 +147,14 @@ public class MediaService {
             String uploadId,
             int chunkIndex,
             int totalChunks,
+            String chunkMd5,
             MultipartFile chunk,
             Long userId
     ) throws IOException {
         if (chunk == null || chunk.isEmpty()) {
             throw new IllegalArgumentException("chunk is empty");
         }
+        validateFileMd5(chunkMd5);
 
         Map<Object, Object> metadata = requireOwnedUpload(uploadId, userId);
         int expectedChunks = Integer.parseInt(String.valueOf(metadata.get("totalChunks")));
@@ -160,7 +164,22 @@ public class MediaService {
 
         Path directory = uploadDirectory(uploadId);
         Files.createDirectories(directory);
-        chunk.transferTo(chunkPath(directory, chunkIndex));
+        Path temporary = directory.resolve("part-" + chunkIndex + ".tmp-" + UUID.randomUUID());
+        try {
+            MessageDigest digest = md5Digest();
+            try (InputStream input = chunk.getInputStream();
+                 OutputStream fileOutput = Files.newOutputStream(temporary);
+                 DigestOutputStream output = new DigestOutputStream(fileOutput, digest)) {
+                input.transferTo(output);
+            }
+            String actualMd5 = HexFormat.of().formatHex(digest.digest());
+            if (!actualMd5.equals(chunkMd5)) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "分片完整性校验失败");
+            }
+            moveReplacingAtomically(temporary, chunkPath(directory, chunkIndex));
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
         redisTemplate.opsForSet().add(partsKey(uploadId), String.valueOf(chunkIndex));
         redisTemplate.expire(CHUNK_UPLOAD_KEY_PREFIX + uploadId, 1, TimeUnit.DAYS);
         redisTemplate.expire(partsKey(uploadId), 1, TimeUnit.DAYS);
@@ -301,6 +320,19 @@ public class MediaService {
 
     private Path chunkPath(Path directory, int chunkIndex) {
         return directory.resolve("part-" + chunkIndex);
+    }
+
+    private void moveReplacingAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(
+                    source,
+                    target,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING
+            );
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private String partsKey(String uploadId) {

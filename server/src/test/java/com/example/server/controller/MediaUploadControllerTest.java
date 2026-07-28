@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -96,6 +97,18 @@ class MediaUploadControllerTest {
                                   "totalChunks": 3
                                 }
                                 """)
+                        .header("Authorization", "Bearer " + tokenFor(1L)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void requiresChunkMd5WhenUploadingAChunk() throws Exception {
+        mockMvc.perform(multipart("/media/upload-chunk")
+                        .file("file", "hello".getBytes())
+                        .param("uploadId", "550e8400-e29b-41d4-a716-446655440001")
+                        .param("chunkIndex", "0")
+                        .param("totalChunks", "1")
                         .header("Authorization", "Bearer " + tokenFor(1L)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));

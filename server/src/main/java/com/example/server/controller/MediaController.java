@@ -94,9 +94,17 @@ public class MediaController {
     public ApiResponse<String> uploadChunk(@RequestParam String uploadId,
                                            @RequestParam int chunkIndex,
                                            @RequestParam int totalChunks,
+                                           @RequestParam String chunkMd5,
                                            @RequestParam("file") MultipartFile file,
                                            @AuthenticationPrincipal AuthenticatedUser currentUser) throws Exception {
-        mediaService.uploadChunk(uploadId, chunkIndex, totalChunks, file, currentUser.userId());
+        mediaService.uploadChunk(
+                uploadId,
+                chunkIndex,
+                totalChunks,
+                chunkMd5,
+                file,
+                currentUser.userId()
+        );
         return ApiResponse.success("Chunk uploaded");
     }
 
