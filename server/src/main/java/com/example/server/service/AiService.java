@@ -31,7 +31,7 @@ public class AiService {
     @Autowired
     private AgentLoopService agentLoopService;
 
-    public void asyncAnalyze(Long mediaId, String userGoal) {
+    public void analyze(Long mediaId, String userGoal) {
         System.out.println(" [线程池] 开始处理任务，ID: " + mediaId);
 
         MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
