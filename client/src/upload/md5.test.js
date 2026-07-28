@@ -60,6 +60,21 @@ describe('MD5 哈希封装', () => {
     expect(worker.terminate).toHaveBeenCalledOnce()
   })
 
+  it('取消哈希时终止 Worker 并拒绝任务', async () => {
+    const worker = new FakeWorker()
+    const controller = new AbortController()
+    const resultPromise = calculateFileMd5(
+      new Blob(['hello']),
+      undefined,
+      { signal: controller.signal, workerFactory: () => worker }
+    )
+
+    controller.abort()
+
+    await expect(resultPromise).rejects.toMatchObject({ name: 'AbortError' })
+    expect(worker.terminate).toHaveBeenCalledOnce()
+  })
+
   it('计算单分片 MD5', async () => {
     await expect(calculateChunkMd5(new Blob(['hello'])))
       .resolves.toBe('5d41402abc4b2a76b9719d911017c592')

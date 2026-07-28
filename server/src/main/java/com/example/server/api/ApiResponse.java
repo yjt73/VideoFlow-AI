@@ -5,6 +5,7 @@ import java.util.UUID;
 
 public record ApiResponse<T>(
         int code,
+        String errorCode,
         String message,
         T data,
         String requestId,
@@ -12,11 +13,18 @@ public record ApiResponse<T>(
 ) {
 
     public static <T> ApiResponse<T> success(T data) {
-        return new ApiResponse<>(200, "成功", data, newRequestId(), Instant.now());
+        return new ApiResponse<>(200, null, "成功", data, newRequestId(), Instant.now());
     }
 
     public static ApiResponse<Void> error(ErrorCode errorCode, String message) {
-        return new ApiResponse<>(errorCode.code(), message, null, newRequestId(), Instant.now());
+        return new ApiResponse<>(
+                errorCode.code(),
+                errorCode.name(),
+                message,
+                null,
+                newRequestId(),
+                Instant.now()
+        );
     }
 
     private static String newRequestId() {

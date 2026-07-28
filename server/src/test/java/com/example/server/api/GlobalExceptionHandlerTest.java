@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.data.redis.RedisConnectionFailureException;
+import org.redisson.client.RedisConnectionException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -47,7 +48,15 @@ class GlobalExceptionHandlerTest {
         assertError("/test/rate-limited", 429);
         assertError("/test/dependency", 503);
         assertError("/test/redis", 503);
+        assertError("/test/redisson", 503);
         assertError("/test/internal", 500);
+    }
+
+    @Test
+    void uploadSessionExpirationHasStableBusinessCode() throws Exception {
+        mockMvc.perform(get("/test/upload-session-expired"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("UPLOAD_SESSION_EXPIRED"));
     }
 
     private void assertError(String path, int expectedStatus) throws Exception {
@@ -84,6 +93,16 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/test/redis")
         void redis() {
             throw new RedisConnectionFailureException("redis unavailable");
+        }
+
+        @GetMapping("/test/redisson")
+        void redisson() {
+            throw new RedisConnectionException("redisson unavailable");
+        }
+
+        @GetMapping("/test/upload-session-expired")
+        void uploadSessionExpired() {
+            throw new BusinessException(ErrorCode.UPLOAD_SESSION_EXPIRED, "上传会话已过期");
         }
 
         @GetMapping("/test/internal")

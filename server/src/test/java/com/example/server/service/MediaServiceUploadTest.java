@@ -18,6 +18,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RLock;
+import org.redisson.api.RReadWriteLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.HashOperations;
@@ -28,6 +29,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -62,6 +64,10 @@ class MediaServiceUploadTest {
     @Mock
     private RLock mergeLock;
     @Mock
+    private RLock chunkLock;
+    @Mock
+    private RReadWriteLock uploadLock;
+    @Mock
     private HashOperations<String, Object, Object> hashOperations;
     @Mock
     private SetOperations<String, String> setOperations;
@@ -73,7 +79,11 @@ class MediaServiceUploadTest {
     void setUpRedisOperations() {
         lenient().when(redisTemplate.opsForHash()).thenReturn(hashOperations);
         lenient().when(redisTemplate.opsForSet()).thenReturn(setOperations);
-        lenient().when(redissonClient.getLock(any())).thenReturn(mergeLock);
+        lenient().when(redissonClient.getReadWriteLock(any())).thenReturn(uploadLock);
+        lenient().when(uploadLock.readLock()).thenReturn(chunkLock);
+        lenient().when(uploadLock.writeLock()).thenReturn(mergeLock);
+        lenient().when(chunkLock.tryLock()).thenReturn(true);
+        lenient().when(chunkLock.isHeldByCurrentThread()).thenReturn(true);
         lenient().when(mergeLock.tryLock()).thenReturn(true);
         lenient().when(mergeLock.isHeldByCurrentThread()).thenReturn(true);
     }
@@ -138,7 +148,7 @@ class MediaServiceUploadTest {
         assertThatThrownBy(() -> mediaService.checkUpload(request(UPLOAD_ID), 1L))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(error -> assertThat(((BusinessException) error).getErrorCode())
-                        .isEqualTo(ErrorCode.NOT_FOUND));
+                        .isEqualTo(ErrorCode.UPLOAD_SESSION_EXPIRED));
     }
 
     @Test
@@ -208,6 +218,33 @@ class MediaServiceUploadTest {
                 .isEqualTo("hello");
         verify(setOperations, times(2))
                 .add("upload:chunked:" + CHUNK_UPLOAD_ID + ":parts", "0");
+    }
+
+    @Test
+    void rejectsLateChunkWhenUploadIsMerging() {
+        stubOwnedUpload(CHUNK_UPLOAD_ID, 2, "MERGING");
+        MockMultipartFile chunk = new MockMultipartFile("file", "part", null, "hello".getBytes());
+
+        assertThatThrownBy(() -> mediaService.uploadChunk(
+                CHUNK_UPLOAD_ID, 0, 2, FILE_MD5, chunk, 1L
+        ))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> assertThat(((BusinessException) error).getErrorCode())
+                        .isEqualTo(ErrorCode.CONFLICT));
+
+        assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).doesNotExist();
+    }
+
+    @Test
+    void chunkCannotStartWhileMergeOwnsWriteLock() {
+        when(chunkLock.tryLock()).thenReturn(false);
+        MockMultipartFile chunk = new MockMultipartFile("file", "part", null, "hello".getBytes());
+
+        assertThatThrownBy(() -> mediaService.uploadChunk(
+                CHUNK_UPLOAD_ID, 0, 2, FILE_MD5, chunk, 1L
+        )).isInstanceOf(DependencyUnavailableException.class);
+
+        assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).doesNotExist();
     }
 
     @Test
@@ -306,8 +343,10 @@ class MediaServiceUploadTest {
 
         assertThat(result.getContentHash()).isEqualTo(FILE_MD5);
         assertThat(result.getId()).isEqualTo(21L);
-        verify(hashOperations).put("upload:chunked:" + CHUNK_UPLOAD_ID, "status", "COMPLETED");
-        verify(hashOperations).put("upload:chunked:" + CHUNK_UPLOAD_ID, "mediaId", "21");
+        verify(hashOperations).putAll(
+                "upload:chunked:" + CHUNK_UPLOAD_ID,
+                Map.of("status", "COMPLETED", "mediaId", "21")
+        );
         assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).doesNotExist();
     }
 
@@ -335,6 +374,16 @@ class MediaServiceUploadTest {
                 "upload:chunked:" + CHUNK_UPLOAD_ID,
                 "upload:chunked:" + CHUNK_UPLOAD_ID + ":parts"
         ));
+    }
+
+    @Test
+    void cancelDoesNotRaceWithMergeOwner() {
+        when(mergeLock.tryLock()).thenReturn(false);
+
+        assertThatThrownBy(() -> mediaService.cancelUpload(CHUNK_UPLOAD_ID, 1L))
+                .isInstanceOf(DependencyUnavailableException.class);
+
+        verify(redisTemplate, never()).delete(any(Collection.class));
     }
 
     @Test
@@ -371,12 +420,16 @@ class MediaServiceUploadTest {
     }
 
     private void stubOwnedUpload(String uploadId, int totalChunks) {
+        stubOwnedUpload(uploadId, totalChunks, "UPLOADING");
+    }
+
+    private void stubOwnedUpload(String uploadId, int totalChunks, String status) {
         when(hashOperations.entries("upload:chunked:" + uploadId)).thenReturn(Map.of(
                 "filename", "demo.mp4",
                 "fileMd5", FILE_MD5,
                 "totalChunks", String.valueOf(totalChunks),
                 "userId", "1",
-                "status", "UPLOADING"
+                "status", status
         ));
     }
 

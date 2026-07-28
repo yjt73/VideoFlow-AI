@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.RedisSystemException;
+import org.redisson.client.RedisException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -43,7 +44,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler({
             RedisConnectionFailureException.class,
-            RedisSystemException.class
+            RedisSystemException.class,
+            RedisException.class
     })
     ResponseEntity<ApiResponse<Void>> handleRedisFailure(RuntimeException exception) {
         return error(ErrorCode.DEPENDENCY_UNAVAILABLE, "Redis 暂时不可用");

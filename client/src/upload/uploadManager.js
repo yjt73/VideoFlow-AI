@@ -90,6 +90,7 @@ export class UploadManager {
     const version = this.runVersion
     this.file = file
     this.userId = userId
+    this.fileMd5 = null
     this.totalChunks = Math.ceil(file.size / this.chunkSize)
     this.uploadedChunks = new Set()
     this.retryCount = 0
@@ -102,12 +103,20 @@ export class UploadManager {
     this.setState(UPLOAD_STATES.HASHING)
 
     try {
-      this.fileMd5 = await this.calculateFileMd5(file, (progress) => {
-        if (version !== this.runVersion) return
-        this.hashProgress = progress
-        this.emit()
-      })
+      const hashController = new AbortController()
+      this.controllers.add(hashController)
+      let fileMd5
+      try {
+        fileMd5 = await this.calculateFileMd5(file, (progress) => {
+          if (version !== this.runVersion) return
+          this.hashProgress = progress
+          this.emit()
+        }, { signal: hashController.signal })
+      } finally {
+        this.controllers.delete(hashController)
+      }
       this.ensureCurrent(version)
+      this.fileMd5 = fileMd5
       const check = await this.retryOperation(
         () => this.checkUpload(version),
         version,
@@ -130,7 +139,10 @@ export class UploadManager {
   }
 
   async resume() {
-    if (!this.file || !this.fileMd5) return null
+    if (!this.file) return null
+    if (!this.fileMd5) {
+      return this.start(this.file, this.userId)
+    }
     this.pausedByUser = false
     this.abortRequests()
     this.runVersion += 1
@@ -235,7 +247,6 @@ export class UploadManager {
         await this.retryOperation(() => this.uploadChunk(index, version), version, 'uploading')
         this.ensureCurrent(version)
         this.uploadedChunks.add(index)
-        this.retryCount = 0
         this.updateProgress()
       }
     }
@@ -299,29 +310,31 @@ export class UploadManager {
   }
 
   async retryOperation(operation, version, stage) {
-    for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt += 1) {
+    while (true) {
       try {
-        return await operation()
+        const result = await operation()
+        this.retryCount = 0
+        return result
       } catch (error) {
         this.ensureCurrent(version)
         if (!isRetryable(error)) throw error
         this.lastError = error.message
-        this.retryCount = attempt + 1
+        this.retryCount += 1
+        const failureCount = this.retryCount
         this.resumeStage = stage
-        if (this.retryCount >= RETRY_DELAYS_MS.length) {
+        if (failureCount >= RETRY_DELAYS_MS.length) {
           this.pausedByUser = false
           this.setState(UPLOAD_STATES.PAUSED)
           throw new FlowInterrupted()
         }
         this.setState(UPLOAD_STATES.RETRYING)
-        await this.sleep(RETRY_DELAYS_MS[attempt])
+        await this.sleep(RETRY_DELAYS_MS[failureCount - 1])
         this.ensureCurrent(version)
         this.setState(stage === 'merging'
           ? UPLOAD_STATES.MERGING
           : UPLOAD_STATES.UPLOADING)
       }
     }
-    throw new FlowInterrupted()
   }
 
   async request(path, options, version) {
@@ -381,7 +394,7 @@ export class UploadManager {
   }
 }
 
-const isExpiredUpload = (error) => error?.status === 404
+const isExpiredUpload = (error) => error?.errorCode === 'UPLOAD_SESSION_EXPIRED'
 
 const isRetryable = (error) => {
   if (error?.name === 'AbortError') return false

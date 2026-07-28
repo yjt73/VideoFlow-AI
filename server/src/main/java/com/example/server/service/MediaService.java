@@ -157,12 +157,45 @@ public class MediaService {
             MultipartFile chunk,
             Long userId
     ) throws IOException {
+        RLock lock = redissonClient.getReadWriteLock(
+                "lock:upload:merge:" + uploadId
+        ).readLock();
+        if (!lock.tryLock()) {
+            throw new DependencyUnavailableException("上传任务正在合并，分片稍后重试");
+        }
+        try {
+            uploadChunkUnderLock(
+                    uploadId,
+                    chunkIndex,
+                    totalChunks,
+                    chunkMd5,
+                    chunk,
+                    userId
+            );
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    private void uploadChunkUnderLock(
+            String uploadId,
+            int chunkIndex,
+            int totalChunks,
+            String chunkMd5,
+            MultipartFile chunk,
+            Long userId
+    ) throws IOException {
         if (chunk == null || chunk.isEmpty()) {
             throw new IllegalArgumentException("chunk is empty");
         }
         validateFileMd5(chunkMd5);
 
         Map<Object, Object> metadata = requireOwnedUpload(uploadId, userId);
+        if (!"UPLOADING".equals(String.valueOf(metadata.get("status")))) {
+            throw new BusinessException(ErrorCode.CONFLICT, "上传任务当前不可接收分片");
+        }
         int expectedChunks = Integer.parseInt(String.valueOf(metadata.get("totalChunks")));
         if (totalChunks != expectedChunks || chunkIndex < 0 || chunkIndex >= expectedChunks) {
             throw new IllegalArgumentException("invalid chunk index or totalChunks");
@@ -193,7 +226,9 @@ public class MediaService {
 
     public MediaFile completeChunkedUpload(String uploadId, Long userId) throws Exception {
         requireOwnedUpload(uploadId, userId);
-        RLock lock = redissonClient.getLock("lock:upload:merge:" + uploadId);
+        RLock lock = redissonClient.getReadWriteLock(
+                "lock:upload:merge:" + uploadId
+        ).writeLock();
         if (!lock.tryLock()) {
             throw new DependencyUnavailableException("上传任务正在合并，请稍后重试");
         }
@@ -320,15 +355,27 @@ public class MediaService {
 
     public void cancelUpload(String uploadId, Long userId) {
         uploadDirectory(uploadId);
-        Map<Object, Object> metadata = redisTemplate.opsForHash()
-                .entries(CHUNK_UPLOAD_KEY_PREFIX + uploadId);
-        if (!metadata.isEmpty()) {
-            requireOwner(metadata, userId);
+        RLock lock = redissonClient.getReadWriteLock(
+                "lock:upload:merge:" + uploadId
+        ).writeLock();
+        if (!lock.tryLock()) {
+            throw new DependencyUnavailableException("上传任务正在合并，暂时无法取消");
         }
         try {
-            cleanupUpload(uploadId);
-        } catch (IOException e) {
-            throw new DependencyUnavailableException("上传临时文件清理失败", e);
+            Map<Object, Object> metadata = redisTemplate.opsForHash()
+                    .entries(CHUNK_UPLOAD_KEY_PREFIX + uploadId);
+            if (!metadata.isEmpty()) {
+                requireOwner(metadata, userId);
+            }
+            try {
+                cleanupUpload(uploadId);
+            } catch (IOException e) {
+                throw new DependencyUnavailableException("上传临时文件清理失败", e);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
@@ -375,7 +422,7 @@ public class MediaService {
         Map<Object, Object> metadata = redisTemplate.opsForHash()
                 .entries(CHUNK_UPLOAD_KEY_PREFIX + uploadId);
         if (metadata.isEmpty()) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "上传任务不存在或已过期");
+            throw new BusinessException(ErrorCode.UPLOAD_SESSION_EXPIRED, "上传任务不存在或已过期");
         }
         return metadata;
     }
@@ -427,8 +474,8 @@ public class MediaService {
                     StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING
             );
-        } catch (AtomicMoveNotSupportedException ignored) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException exception) {
+            throw new IOException("当前文件系统不支持分片原子落盘", exception);
         }
     }
 
@@ -469,8 +516,10 @@ public class MediaService {
     private void markUploadCompleted(String uploadId, Long mediaId) {
         try {
             String redisKey = CHUNK_UPLOAD_KEY_PREFIX + uploadId;
-            redisTemplate.opsForHash().put(redisKey, "status", "COMPLETED");
-            redisTemplate.opsForHash().put(redisKey, "mediaId", String.valueOf(mediaId));
+            redisTemplate.opsForHash().putAll(
+                    redisKey,
+                    Map.of("status", "COMPLETED", "mediaId", String.valueOf(mediaId))
+            );
             redisTemplate.expire(redisKey, 1, TimeUnit.DAYS);
         } catch (Exception ignored) {
             // MySQL 是最终事实来源，Redis 恢复后 check-upload 会命中数据库。

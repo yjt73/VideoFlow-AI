@@ -180,6 +180,78 @@ describe('UploadManager', () => {
     expect(manager.snapshot.retryCount).toBe(8)
   })
 
+  it('并发分片累计八次连续失败后全局暂停', async () => {
+    let uploadAttempts = 0
+    const apiFetch = vi.fn(async (path) => {
+      if (path === '/media/check-upload') {
+        return { state: 'NEW', uploadId: 'upload-1', uploadedChunks: [] }
+      }
+      if (path === '/media/upload-chunk') {
+        uploadAttempts += 1
+        const error = new Error('temporary')
+        error.status = 503
+        throw error
+      }
+      return completedMedia
+    })
+    const { manager } = createManager({ apiFetch, concurrency: 3 })
+
+    await manager.start(fileOf('abc'), 1)
+
+    expect(uploadAttempts).toBeGreaterThanOrEqual(8)
+    expect(uploadAttempts).toBeLessThanOrEqual(10)
+    expect(manager.snapshot.state).toBe(UPLOAD_STATES.PAUSED)
+    expect(manager.snapshot.retryCount).toBe(8)
+  })
+
+  it('取消旧文件哈希后不会覆盖新文件的哈希', async () => {
+    let resolveOldHash
+    const calculateFileMd5 = vi.fn((file) => {
+      if (file.name === 'old.mp4') {
+        return new Promise((resolve) => {
+          resolveOldHash = resolve
+        })
+      }
+      return Promise.resolve(FILE_MD5)
+    })
+    const { manager } = createManager({ calculateFileMd5 })
+    const oldFile = Object.assign(new Blob(['old']), { name: 'old.mp4' })
+    const newFile = Object.assign(new Blob(['new']), { name: 'new.mp4' })
+
+    const oldStart = manager.start(oldFile, 1)
+    await manager.cancel()
+    const newStart = manager.start(newFile, 1)
+    resolveOldHash('149603e6c03516362a8da23f624db945')
+    await Promise.all([oldStart, newStart])
+
+    expect(manager.fileMd5).toBe(FILE_MD5)
+    expect(manager.snapshot.state).toBe(UPLOAD_STATES.COMPLETED)
+  })
+
+  it('哈希阶段暂停后可重新计算并继续上传', async () => {
+    let firstAttempt = true
+    let rejectFirst
+    const calculateFileMd5 = vi.fn(() => {
+      if (firstAttempt) {
+        firstAttempt = false
+        return new Promise((resolve, reject) => {
+          rejectFirst = reject
+        })
+      }
+      return Promise.resolve(FILE_MD5)
+    })
+    const { manager } = createManager({ calculateFileMd5 })
+
+    const start = manager.start(fileOf('a'), 1)
+    manager.pause()
+    rejectFirst(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    await start
+    await manager.resume()
+
+    expect(calculateFileMd5).toHaveBeenCalledTimes(2)
+    expect(manager.snapshot.state).toBe(UPLOAD_STATES.COMPLETED)
+  })
+
   it('继续上传前重新查询服务端分片状态', async () => {
     let checks = 0
     let releaseSleep
@@ -301,6 +373,7 @@ describe('UploadManager', () => {
         if (checks === 1) {
           const error = new Error('expired')
           error.status = 404
+          error.errorCode = 'UPLOAD_SESSION_EXPIRED'
           throw error
         }
         return { state: 'COMPLETED', deduplicated: true, media: completedMedia }
@@ -313,6 +386,22 @@ describe('UploadManager', () => {
 
     expect(storage.removeItem).toHaveBeenCalledWith(`upload:1:${FILE_MD5}`)
     expect(checks).toBe(2)
+  })
+
+  it('普通 404 不会清除可续传 uploadId', async () => {
+    const storage = memoryStorage()
+    storage.setItem(`upload:1:${FILE_MD5}`, 'upload-1')
+    const error = new Error('route not found')
+    error.status = 404
+    const apiFetch = vi.fn(async () => {
+      throw error
+    })
+    const { manager } = createManager({ apiFetch, storage })
+
+    await manager.start(fileOf('abc'), 1)
+
+    expect(storage.removeItem).not.toHaveBeenCalled()
+    expect(manager.snapshot.state).toBe(UPLOAD_STATES.FAILED)
   })
 
   it('秒传命中时不上传分片', async () => {

@@ -68,4 +68,17 @@ describe('apiFetch 请求控制', () => {
       requestId: 'request-1'
     })
   })
+
+  it('保留稳定业务错误码供上传会话过期判断', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      code: 404,
+      errorCode: 'UPLOAD_SESSION_EXPIRED',
+      message: '上传会话已过期'
+    }, 404)))
+
+    await expect(apiFetch('/media/check-upload')).rejects.toMatchObject({
+      status: 404,
+      errorCode: 'UPLOAD_SESSION_EXPIRED'
+    })
+  })
 })
