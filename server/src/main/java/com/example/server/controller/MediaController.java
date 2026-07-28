@@ -23,7 +23,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -110,12 +109,22 @@ public class MediaController {
 
     @PostMapping("/complete-upload")
     /** 合并全部分片，完成对象存储和数据库持久化。 */
-    public ApiResponse<String> completeUpload(@RequestParam String uploadId,
-                                              @AuthenticationPrincipal AuthenticatedUser currentUser) throws Exception {
-        mediaService.completeChunkedUpload(uploadId, currentUser.userId());
-        return ApiResponse.success("Upload success");
+    public ApiResponse<MediaFile> completeUpload(
+            @RequestParam String uploadId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) throws Exception {
+        return ApiResponse.success(mediaService.completeChunkedUpload(uploadId, currentUser.userId()));
     }
 
+    /** 取消未完成的上传会话并清理临时分片。 */
+    @DeleteMapping("/upload")
+    public ApiResponse<String> cancelUpload(
+            @RequestParam String uploadId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        mediaService.cancelUpload(uploadId, currentUser.userId());
+        return ApiResponse.success("上传任务已取消");
+    }
 
     @PostMapping("/upload")
     /** 兼容小文件场景的一次性完整文件上传接口。 */
@@ -133,16 +142,12 @@ public class MediaController {
             String fileUrl = minioUtils.uploadFile(file);
             System.out.println("MinIO upload success, url: " + fileUrl);
 
-            MediaFile mediaFile = new MediaFile();
-            mediaFile.setFilename(file.getOriginalFilename());
-            mediaFile.setFilePath(fileUrl);
-            mediaFile.setStatus("COMPLETED");
-            mediaFile.setUploadTime(LocalDateTime.now());
-
-            mediaFile.setUserId(currentUser.userId());
-
-            mediaFileMapper.insert(mediaFile);
-            mediaService.rememberContentHash(mediaFile.getId(), md5);
+            mediaService.saveUploadedMedia(
+                    file.getOriginalFilename(),
+                    fileUrl,
+                    md5,
+                    currentUser.userId()
+            );
 
             String cacheKey = "media:list:user:" + currentUser.userId();
             redisTemplate.delete(cacheKey);
@@ -174,16 +179,12 @@ public class MediaController {
             String md5 = mediaService.calculateMd5(tempFile);
             String fileUrl = minioUtils.uploadLocalFile(tempFile);
 
-            MediaFile mediaFile = new MediaFile();
-            mediaFile.setFilename("WEB_" + tempFile.getName());
-            mediaFile.setFilePath(fileUrl);
-            mediaFile.setStatus("COMPLETED");
-            mediaFile.setUploadTime(LocalDateTime.now());
-
-            mediaFile.setUserId(currentUser.userId());
-
-            mediaFileMapper.insert(mediaFile);
-            mediaService.rememberContentHash(mediaFile.getId(), md5);
+            mediaService.saveUploadedMedia(
+                    "WEB_" + tempFile.getName(),
+                    fileUrl,
+                    md5,
+                    currentUser.userId()
+            );
 
             String cacheKey = "media:list:user:" + currentUser.userId();
             redisTemplate.delete(cacheKey);

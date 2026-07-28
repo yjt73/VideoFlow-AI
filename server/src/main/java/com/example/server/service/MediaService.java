@@ -10,7 +10,10 @@ import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.utils.MinioUtils;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -52,6 +55,9 @@ public class MediaService {
 
     @Autowired
     private MinioUtils minioUtils;
+
+    @Autowired
+    private RedissonClient redissonClient;
 
     private final String UPLOAD_DIR = "D:/Project/MediaApp/uploads/";
     private static final String CHUNK_UPLOAD_KEY_PREFIX = "upload:chunked:";
@@ -186,56 +192,143 @@ public class MediaService {
     }
 
     public MediaFile completeChunkedUpload(String uploadId, Long userId) throws Exception {
-        Map<Object, Object> metadata = requireOwnedUpload(uploadId, userId);
-        String filename = String.valueOf(metadata.get("filename"));
-        int totalChunks = Integer.parseInt(String.valueOf(metadata.get("totalChunks")));
-        Path directory = uploadDirectory(uploadId);
+        requireOwnedUpload(uploadId, userId);
+        RLock lock = redissonClient.getLock("lock:upload:merge:" + uploadId);
+        if (!lock.tryLock()) {
+            throw new DependencyUnavailableException("上传任务正在合并，请稍后重试");
+        }
+        try {
+            return completeChunkedUploadUnderLock(uploadId, userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
 
-        Set<Integer> uploadedChunks = getUploadedChunks(uploadId, userId);
-        if (uploadedChunks.size() != totalChunks) {
-            throw new IllegalStateException("not all chunks have been uploaded");
+    private MediaFile completeChunkedUploadUnderLock(String uploadId, Long userId) throws Exception {
+        Map<Object, Object> metadata = requireOwnedUpload(uploadId, userId);
+        if ("COMPLETED".equals(String.valueOf(metadata.get("status")))) {
+            Object mediaId = metadata.get("mediaId");
+            if (mediaId == null) {
+                throw new BusinessException(ErrorCode.NOT_FOUND, "已完成的上传任务缺少媒体记录");
+            }
+            MediaFile completed = mediaFileMapper.selectById(Long.valueOf(String.valueOf(mediaId)));
+            if (completed == null || !userId.equals(completed.getUserId())) {
+                throw new BusinessException(ErrorCode.NOT_FOUND, "媒体记录不存在");
+            }
+            return completed;
         }
 
+        String filename = String.valueOf(metadata.get("filename"));
+        String expectedMd5 = String.valueOf(metadata.get("fileMd5"));
+        int totalChunks = Integer.parseInt(String.valueOf(metadata.get("totalChunks")));
+        Path directory = uploadDirectory(uploadId);
+        Set<Integer> uploadedChunks = getUploadedChunks(uploadId, userId);
+        if (uploadedChunks.size() != totalChunks) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "分片尚未全部上传");
+        }
+
+        redisTemplate.opsForHash().put(CHUNK_UPLOAD_KEY_PREFIX + uploadId, "status", "MERGING");
         Path mergedFile = directory.resolve("merged" + fileSuffix(filename));
+        try {
+            String actualMd5 = mergeChunksAndCalculateMd5(directory, mergedFile, totalChunks);
+            if (!expectedMd5.equals(actualMd5)) {
+                redisTemplate.opsForHash().put(
+                        CHUNK_UPLOAD_KEY_PREFIX + uploadId,
+                        "status",
+                        "UPLOADING"
+                );
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "整文件完整性校验失败");
+            }
+
+            String fileUrl;
+            try {
+                fileUrl = minioUtils.uploadLocalFile(mergedFile.toFile(), filename);
+            } catch (Exception e) {
+                restoreUploadStatus(uploadId);
+                throw new DependencyUnavailableException("对象存储暂时不可用", e);
+            }
+
+            MediaFile mediaFile = saveUploadedMedia(filename, fileUrl, expectedMd5, userId);
+            markUploadCompleted(uploadId, mediaFile.getId());
+            invalidateMediaList(userId);
+            try {
+                cleanupUploadFiles(uploadId);
+            } catch (Exception ignored) {
+                // 数据库已成功入库，临时文件清理由后续维护任务兜底。
+            }
+            return mediaFile;
+        } catch (BusinessException e) {
+            restoreUploadStatus(uploadId);
+            throw e;
+        } catch (Exception e) {
+            restoreUploadStatus(uploadId);
+            throw new DependencyUnavailableException("文件合并暂时失败", e);
+        } finally {
+            Files.deleteIfExists(mergedFile);
+        }
+    }
+
+    private String mergeChunksAndCalculateMd5(Path directory, Path mergedFile, int totalChunks)
+            throws IOException {
         MessageDigest digest = md5Digest();
-        //创建文件
-        //1.提高大文件合并写入性能
-        //2.保证 MD5 在写入文件过程中同步计算
-        //3.避免一次次小块 IO 操作
         try (OutputStream fileOutput = Files.newOutputStream(mergedFile);
              DigestOutputStream digestOutput = new DigestOutputStream(fileOutput, digest);
              BufferedOutputStream output = new BufferedOutputStream(digestOutput)) {
             for (int i = 0; i < totalChunks; i++) {
                 Path part = chunkPath(directory, i);
                 if (!Files.isRegularFile(part)) {
-                    throw new IllegalStateException("missing chunk: " + i);
+                    throw new BusinessException(ErrorCode.BAD_REQUEST, "缺少分片: " + i);
                 }
                 Files.copy(part, output);
             }
         }
+        return HexFormat.of().formatHex(digest.digest());
+    }
 
-        String fileUrl = minioUtils.uploadLocalFile(mergedFile.toFile(), filename);
+    public MediaFile saveUploadedMedia(
+            String filename,
+            String fileUrl,
+            String contentHash,
+            Long userId
+    ) {
+        validateFileMd5(contentHash);
+        MediaFile mediaFile = new MediaFile();
+        mediaFile.setFilename(filename);
+        mediaFile.setFilePath(fileUrl);
+        mediaFile.setContentHash(contentHash);
+        mediaFile.setStatus("COMPLETED");
+        mediaFile.setUploadTime(LocalDateTime.now());
+        mediaFile.setUserId(userId);
         try {
-            MediaFile mediaFile = new MediaFile();
-            mediaFile.setFilename(filename);
-            mediaFile.setFilePath(fileUrl);
-            mediaFile.setStatus("COMPLETED");
-            mediaFile.setUploadTime(LocalDateTime.now());
-            Object storedUserId = metadata.get("userId");
-            if (storedUserId != null) {
-                mediaFile.setUserId(Long.valueOf(String.valueOf(storedUserId)));
-            }
             mediaFileMapper.insert(mediaFile);
-
-            rememberContentHash(mediaFile.getId(), HexFormat.of().formatHex(digest.digest()));
-            if (mediaFile.getUserId() != null) {
-                redisTemplate.delete("media:list:user:" + mediaFile.getUserId());
-            }
-            cleanupUpload(uploadId);
+            rememberContentHash(mediaFile.getId(), contentHash);
             return mediaFile;
+        } catch (DuplicateKeyException duplicate) {
+            minioUtils.removeFile(fileUrl);
+            MediaFile existing = findOwnedMedia(userId, contentHash);
+            if (existing == null) {
+                throw duplicate;
+            }
+            return existing;
         } catch (Exception e) {
             minioUtils.removeFile(fileUrl);
-            throw e;
+            throw new DependencyUnavailableException("媒体记录保存失败", e);
+        }
+    }
+
+    public void cancelUpload(String uploadId, Long userId) {
+        uploadDirectory(uploadId);
+        Map<Object, Object> metadata = redisTemplate.opsForHash()
+                .entries(CHUNK_UPLOAD_KEY_PREFIX + uploadId);
+        if (!metadata.isEmpty()) {
+            requireOwner(metadata, userId);
+        }
+        try {
+            cleanupUpload(uploadId);
+        } catch (IOException e) {
+            throw new DependencyUnavailableException("上传临时文件清理失败", e);
         }
     }
 
@@ -252,7 +345,11 @@ public class MediaService {
     }
 
     public void rememberContentHash(Long mediaId, String md5) {
-        redisTemplate.opsForValue().set(MEDIA_MD5_KEY_PREFIX + mediaId, md5);
+        try {
+            redisTemplate.opsForValue().set(MEDIA_MD5_KEY_PREFIX + mediaId, md5);
+        } catch (Exception ignored) {
+            // content_hash 已持久化到 MySQL，Redis 只作为兼容缓存。
+        }
     }
 
     private String calculateMd5(InputStream inputStream) throws IOException {
@@ -345,6 +442,16 @@ public class MediaService {
     }
 
     private void cleanupUpload(String uploadId) throws IOException {
+        deleteUploadDirectory(uploadId);
+        redisTemplate.delete(List.of(CHUNK_UPLOAD_KEY_PREFIX + uploadId, partsKey(uploadId)));
+    }
+
+    private void cleanupUploadFiles(String uploadId) throws IOException {
+        deleteUploadDirectory(uploadId);
+        redisTemplate.delete(partsKey(uploadId));
+    }
+
+    private void deleteUploadDirectory(String uploadId) throws IOException {
         Path directory = uploadDirectory(uploadId);
         if (Files.exists(directory)) {
             try (var paths = Files.walk(directory)) {
@@ -357,7 +464,37 @@ public class MediaService {
                 });
             }
         }
-        redisTemplate.delete(List.of(CHUNK_UPLOAD_KEY_PREFIX + uploadId, partsKey(uploadId)));
+    }
+
+    private void markUploadCompleted(String uploadId, Long mediaId) {
+        try {
+            String redisKey = CHUNK_UPLOAD_KEY_PREFIX + uploadId;
+            redisTemplate.opsForHash().put(redisKey, "status", "COMPLETED");
+            redisTemplate.opsForHash().put(redisKey, "mediaId", String.valueOf(mediaId));
+            redisTemplate.expire(redisKey, 1, TimeUnit.DAYS);
+        } catch (Exception ignored) {
+            // MySQL 是最终事实来源，Redis 恢复后 check-upload 会命中数据库。
+        }
+    }
+
+    private void restoreUploadStatus(String uploadId) {
+        try {
+            redisTemplate.opsForHash().put(
+                    CHUNK_UPLOAD_KEY_PREFIX + uploadId,
+                    "status",
+                    "UPLOADING"
+            );
+        } catch (Exception ignored) {
+            // 依赖恢复后客户端会重新检查会话。
+        }
+    }
+
+    private void invalidateMediaList(Long userId) {
+        try {
+            redisTemplate.delete("media:list:user:" + userId);
+        } catch (Exception ignored) {
+            // 列表缓存可自然过期。
+        }
     }
 
     public String convertVideoToAudio(MultipartFile file) throws IOException, InterruptedException {

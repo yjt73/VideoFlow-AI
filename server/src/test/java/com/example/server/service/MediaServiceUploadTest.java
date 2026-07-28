@@ -2,6 +2,7 @@ package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.server.api.BusinessException;
+import com.example.server.api.DependencyUnavailableException;
 import com.example.server.api.ErrorCode;
 import com.example.server.dto.UploadCheckRequest;
 import com.example.server.dto.UploadCheckResponse;
@@ -16,6 +17,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -37,6 +41,8 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 
 @ExtendWith(MockitoExtension.class)
 class MediaServiceUploadTest {
@@ -52,6 +58,10 @@ class MediaServiceUploadTest {
     @Mock
     private MinioUtils minioUtils;
     @Mock
+    private RedissonClient redissonClient;
+    @Mock
+    private RLock mergeLock;
+    @Mock
     private HashOperations<String, Object, Object> hashOperations;
     @Mock
     private SetOperations<String, String> setOperations;
@@ -63,6 +73,9 @@ class MediaServiceUploadTest {
     void setUpRedisOperations() {
         lenient().when(redisTemplate.opsForHash()).thenReturn(hashOperations);
         lenient().when(redisTemplate.opsForSet()).thenReturn(setOperations);
+        lenient().when(redissonClient.getLock(any())).thenReturn(mergeLock);
+        lenient().when(mergeLock.tryLock()).thenReturn(true);
+        lenient().when(mergeLock.isHeldByCurrentThread()).thenReturn(true);
     }
 
     @AfterEach
@@ -212,6 +225,136 @@ class MediaServiceUploadTest {
         )).isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void rejectsMergeWhenWholeFileHashDiffers() throws Exception {
+        stubMergeUpload("7d793037a0760186574b0282f2f435e7", "UPLOADING", null);
+        writePart(CHUNK_UPLOAD_ID, 0, "hello");
+
+        assertThatThrownBy(() -> mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> assertThat(((BusinessException) error).getErrorCode())
+                        .isEqualTo(ErrorCode.BAD_REQUEST));
+
+        verify(minioUtils, never()).uploadLocalFile(any(), any());
+        assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).exists();
+    }
+
+    @Test
+    void returnsSameMediaWhenUploadAlreadyCompleted() throws Exception {
+        MediaFile existing = media(9L, 1L);
+        stubMergeUpload(FILE_MD5, "COMPLETED", 9L);
+        when(mediaFileMapper.selectById(9L)).thenReturn(existing);
+
+        MediaFile result = mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L);
+
+        assertThat(result).isSameAs(existing);
+        verify(minioUtils, never()).uploadLocalFile(any(), any());
+    }
+
+    @Test
+    void keepsChunksWhenMinioUploadFails() throws Exception {
+        stubMergeUpload(FILE_MD5, "UPLOADING", null);
+        writePart(CHUNK_UPLOAD_ID, 0, "hello");
+        doThrow(new IllegalStateException("minio unavailable"))
+                .when(minioUtils).uploadLocalFile(any(), eq("demo.mp4"));
+
+        assertThatThrownBy(() -> mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L))
+                .isInstanceOf(DependencyUnavailableException.class);
+
+        assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).exists();
+    }
+
+    @Test
+    void returnsExistingMediaOnDuplicateKeyConflict() throws Exception {
+        MediaFile existing = media(12L, 1L);
+        stubMergeUpload(FILE_MD5, "UPLOADING", null);
+        writePart(CHUNK_UPLOAD_ID, 0, "hello");
+        when(minioUtils.uploadLocalFile(any(), eq("demo.mp4")))
+                .thenReturn("http://minio/new-object.mp4");
+        when(mediaFileMapper.insert(any(MediaFile.class)))
+                .thenThrow(new DuplicateKeyException("duplicate"));
+        when(mediaFileMapper.selectOne(any(QueryWrapper.class))).thenReturn(existing);
+
+        MediaFile result = mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L);
+
+        assertThat(result).isSameAs(existing);
+        verify(minioUtils).removeFile("http://minio/new-object.mp4");
+    }
+
+    @Test
+    void onlyOneMergeCanOwnTheRedissonLock() {
+        stubMergeUpload(FILE_MD5, "UPLOADING", null);
+        when(mergeLock.tryLock()).thenReturn(false);
+
+        assertThatThrownBy(() -> mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L))
+                .isInstanceOf(DependencyUnavailableException.class);
+    }
+
+    @Test
+    void successfulMergePersistsHashAndBecomesIdempotent() throws Exception {
+        stubMergeUpload(FILE_MD5, "UPLOADING", null);
+        writePart(CHUNK_UPLOAD_ID, 0, "hello");
+        when(minioUtils.uploadLocalFile(any(), eq("demo.mp4")))
+                .thenReturn("http://minio/demo.mp4");
+        doAnswer(invocation -> {
+            MediaFile inserted = invocation.getArgument(0);
+            inserted.setId(21L);
+            return 1;
+        }).when(mediaFileMapper).insert(any(MediaFile.class));
+
+        MediaFile result = mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L);
+
+        assertThat(result.getContentHash()).isEqualTo(FILE_MD5);
+        assertThat(result.getId()).isEqualTo(21L);
+        verify(hashOperations).put("upload:chunked:" + CHUNK_UPLOAD_ID, "status", "COMPLETED");
+        verify(hashOperations).put("upload:chunked:" + CHUNK_UPLOAD_ID, "mediaId", "21");
+        assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).doesNotExist();
+    }
+
+    @Test
+    void cancelRemovesSessionAndFiles() throws Exception {
+        stubOwnedUpload(CHUNK_UPLOAD_ID, 1);
+        writePart(CHUNK_UPLOAD_ID, 0, "hello");
+
+        mediaService.cancelUpload(CHUNK_UPLOAD_ID, 1L);
+
+        assertThat(testUploadDirectory(CHUNK_UPLOAD_ID)).doesNotExist();
+        verify(redisTemplate).delete(List.of(
+                "upload:chunked:" + CHUNK_UPLOAD_ID,
+                "upload:chunked:" + CHUNK_UPLOAD_ID + ":parts"
+        ));
+    }
+
+    @Test
+    void cancellingMissingSessionIsIdempotent() {
+        when(hashOperations.entries("upload:chunked:" + CHUNK_UPLOAD_ID)).thenReturn(Map.of());
+
+        mediaService.cancelUpload(CHUNK_UPLOAD_ID, 1L);
+
+        verify(redisTemplate).delete(List.of(
+                "upload:chunked:" + CHUNK_UPLOAD_ID,
+                "upload:chunked:" + CHUNK_UPLOAD_ID + ":parts"
+        ));
+    }
+
+    @Test
+    void regularUploadReturnsExistingMediaOnDuplicateKeyConflict() {
+        MediaFile existing = media(31L, 1L);
+        when(mediaFileMapper.insert(any(MediaFile.class)))
+                .thenThrow(new DuplicateKeyException("duplicate"));
+        when(mediaFileMapper.selectOne(any(QueryWrapper.class))).thenReturn(existing);
+
+        MediaFile result = mediaService.saveUploadedMedia(
+                "demo.mp4",
+                "http://minio/new-object.mp4",
+                FILE_MD5,
+                1L
+        );
+
+        assertThat(result).isSameAs(existing);
+        verify(minioUtils).removeFile("http://minio/new-object.mp4");
+    }
+
     private UploadCheckRequest request(String uploadId) {
         return new UploadCheckRequest("demo.mp4", FILE_MD5, 3, uploadId);
     }
@@ -235,6 +378,28 @@ class MediaServiceUploadTest {
                 "userId", "1",
                 "status", "UPLOADING"
         ));
+    }
+
+    private void stubMergeUpload(String fileMd5, String status, Long mediaId) {
+        Map<String, String> metadata = new java.util.HashMap<>();
+        metadata.put("filename", "demo.mp4");
+        metadata.put("fileMd5", fileMd5);
+        metadata.put("totalChunks", "1");
+        metadata.put("userId", "1");
+        metadata.put("status", status);
+        if (mediaId != null) {
+            metadata.put("mediaId", String.valueOf(mediaId));
+        }
+        when(hashOperations.entries("upload:chunked:" + CHUNK_UPLOAD_ID))
+                .thenReturn((Map) metadata);
+        lenient().when(setOperations.members("upload:chunked:" + CHUNK_UPLOAD_ID + ":parts"))
+                .thenReturn(Set.of("0"));
+    }
+
+    private void writePart(String uploadId, int index, String content) throws Exception {
+        Path directory = testUploadDirectory(uploadId);
+        Files.createDirectories(directory);
+        Files.writeString(directory.resolve("part-" + index), content);
     }
 
     private Path testUploadDirectory(String uploadId) {

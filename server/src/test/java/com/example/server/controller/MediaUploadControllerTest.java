@@ -2,6 +2,7 @@ package com.example.server.controller;
 
 import com.example.server.dto.UploadCheckResponse;
 import com.example.server.dto.UploadState;
+import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
 import com.example.server.security.JwtAuthenticationFilter;
@@ -28,6 +29,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -112,6 +115,35 @@ class MediaUploadControllerTest {
                         .header("Authorization", "Bearer " + tokenFor(1L)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void completeUploadReturnsThePersistedMedia() throws Exception {
+        MediaFile media = new MediaFile();
+        media.setId(9L);
+        media.setUserId(1L);
+        media.setFilename("demo.mp4");
+        media.setContentHash("5d41402abc4b2a76b9719d911017c592");
+        when(mediaService.completeChunkedUpload("upload-1", 1L)).thenReturn(media);
+
+        mockMvc.perform(post("/media/complete-upload")
+                        .param("uploadId", "upload-1")
+                        .header("Authorization", "Bearer " + tokenFor(1L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(9))
+                .andExpect(jsonPath("$.data.contentHash")
+                        .value("5d41402abc4b2a76b9719d911017c592"));
+    }
+
+    @Test
+    void authenticatedUserCanCancelOwnUpload() throws Exception {
+        mockMvc.perform(delete("/media/upload")
+                        .param("uploadId", "upload-1")
+                        .header("Authorization", "Bearer " + tokenFor(1L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value("上传任务已取消"));
+
+        verify(mediaService).cancelUpload("upload-1", 1L);
     }
 
     private String tokenFor(Long userId) {

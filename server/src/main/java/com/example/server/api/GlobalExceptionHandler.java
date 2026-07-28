@@ -3,6 +3,8 @@ package com.example.server.api;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.RedisSystemException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -37,6 +39,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException exception) {
         return error(exception.getErrorCode(), exception.getMessage());
+    }
+
+    @ExceptionHandler({
+            RedisConnectionFailureException.class,
+            RedisSystemException.class
+    })
+    ResponseEntity<ApiResponse<Void>> handleRedisFailure(RuntimeException exception) {
+        return error(ErrorCode.DEPENDENCY_UNAVAILABLE, "Redis 暂时不可用");
     }
 
     @ExceptionHandler(AccessDeniedException.class)

@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotBlank;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -45,6 +46,7 @@ class GlobalExceptionHandlerTest {
         assertError("/test/not-found", 404);
         assertError("/test/rate-limited", 429);
         assertError("/test/dependency", 503);
+        assertError("/test/redis", 503);
         assertError("/test/internal", 500);
     }
 
@@ -77,6 +79,11 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/test/dependency")
         void dependency() {
             throw new DependencyUnavailableException("依赖不可用");
+        }
+
+        @GetMapping("/test/redis")
+        void redis() {
+            throw new RedisConnectionFailureException("redis unavailable");
         }
 
         @GetMapping("/test/internal")
