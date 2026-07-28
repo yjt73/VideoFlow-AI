@@ -8,6 +8,8 @@ import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,6 +34,31 @@ class FlywayMigrationTest {
             assertThat(tableExists(connection, "media_files")).isTrue();
             assertThat(constraintExists(connection, "users", "uk_users_username")).isTrue();
             assertThat(indexExists(connection, "media_files", "idx_media_user_upload_time")).isTrue();
+            assertThat(columnExists(connection, "media_files", "content_hash")).isTrue();
+            assertThat(indexExists(connection, "media_files", "uk_media_user_content_hash")).isTrue();
+        }
+    }
+
+    @Test
+    void contentHashIsUniqueWithinAUserButReusableByAnotherUser() throws Exception {
+        String jdbcUrl = "jdbc:h2:mem:flyway-content-hash;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+        Flyway.configure()
+                .dataSource(jdbcUrl, "sa", "")
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    INSERT INTO users (id, username, password, nickname)
+                    VALUES (1, 'user-1', 'hash', '用户一'),
+                           (2, 'user-2', 'hash', '用户二')
+                    """);
+            statement.executeUpdate(mediaInsertSql(1, "first.mp4"));
+            statement.executeUpdate(mediaInsertSql(2, "same-content.mp4"));
+
+            assertThatThrownBySql(() -> statement.executeUpdate(mediaInsertSql(1, "duplicate.mp4")));
         }
     }
 
@@ -56,6 +83,30 @@ class FlywayMigrationTest {
     private boolean indexExists(Connection connection, String tableName, String indexName) throws Exception {
         return indexNames(connection, tableName).stream()
                 .anyMatch(indexName::equalsIgnoreCase);
+    }
+
+    private boolean columnExists(Connection connection, String tableName, String columnName) throws Exception {
+        DatabaseMetaData metaData = connection.getMetaData();
+        try (ResultSet columns = metaData.getColumns(null, null, tableName, columnName)) {
+            return columns.next();
+        }
+    }
+
+    private String mediaInsertSql(long userId, String filename) {
+        return """
+                INSERT INTO media_files (user_id, filename, status, file_path, content_hash)
+                VALUES (%d, '%s', 'COMPLETED', 'http://minio/%s', '5d41402abc4b2a76b9719d911017c592')
+                """.formatted(userId, filename, filename);
+    }
+
+    private void assertThatThrownBySql(SqlOperation operation) {
+        org.assertj.core.api.Assertions.assertThatThrownBy(operation::run)
+                .isInstanceOf(SQLException.class);
+    }
+
+    @FunctionalInterface
+    private interface SqlOperation {
+        void run() throws SQLException;
     }
 
     private boolean constraintExists(Connection connection, String tableName, String constraintName) throws Exception {
