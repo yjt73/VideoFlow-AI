@@ -36,6 +36,29 @@ class FlywayMigrationTest {
             assertThat(indexExists(connection, "media_files", "idx_media_user_upload_time")).isTrue();
             assertThat(columnExists(connection, "media_files", "content_hash")).isTrue();
             assertThat(indexExists(connection, "media_files", "uk_media_user_content_hash")).isTrue();
+            assertThat(tableExists(connection, "analysis_tasks")).isTrue();
+            assertThat(tableExists(connection, "outbox_events")).isTrue();
+            assertThat(tableExists(connection, "analysis_task_failures")).isTrue();
+            assertThat(indexExists(
+                    connection,
+                    "analysis_tasks",
+                    "uk_analysis_tasks_task_id"
+            )).isTrue();
+            assertThat(indexExists(
+                    connection,
+                    "analysis_tasks",
+                    "idx_analysis_tasks_status_created"
+            )).isTrue();
+            assertThat(indexExists(
+                    connection,
+                    "analysis_tasks",
+                    "idx_analysis_tasks_media_type"
+            )).isTrue();
+            assertThat(indexExists(
+                    connection,
+                    "outbox_events",
+                    "uk_outbox_aggregate_event"
+            )).isTrue();
         }
     }
 
