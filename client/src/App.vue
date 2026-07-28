@@ -252,6 +252,7 @@ import { marked } from 'marked'
 import { apiFetch, clearToken, getToken, setToken } from './api'
 import { calculateChunkMd5, calculateFileMd5 } from './upload/md5'
 import { UploadManager, UPLOAD_STATES } from './upload/uploadManager'
+import { pollAnalysisTask } from './analysis/taskPolling'
 
 // --- 变量定义 ---
 const file = ref(null)
@@ -556,8 +557,7 @@ const transcribe = async (id) => {
   }
 }
 
-// === 【核心修改】AI 分析函数，增加限流/锁错误的处理 ===
-// 提交带用户目标的视频 AI 分析任务。
+// 创建全局分析任务，并按 taskId 查询独立任务状态。
 const aiAnalyze = async (id) => {
   const item = list.value.find(i => i.id === id)
 
@@ -573,7 +573,9 @@ const aiAnalyze = async (id) => {
   if (pollingTimers.value[id] && pollingTimers.value[id].type === 'ai') {
     openSidebar('ai', 'AI 智能总结')
     sidebar.value.loading = true
-    sidebar.value.content = "🚀 系统正在后台拼命计算中...\n\n(任务正在进行，无需重复提交)"
+    const active = pollingTimers.value[id]
+    sidebar.value.content = `任务 ${active.taskId}\n\n正在后台处理，请勿重复提交。`
+    sidebar.value.loading = false
     return
   }
 
@@ -583,28 +585,51 @@ const aiAnalyze = async (id) => {
   sidebar.value.content = "🚀 正在向分布式集群请求计算资源..."
 
   try {
-    // 请求后端
-    const text = await apiFetch(`/debug/ai?id=${id}`)
-
-    // 4. 【关键逻辑】检查后端返回的文本
-    // 如果包含 "⚠️" (限流/锁) 或者 "❌" (报错)，说明任务被拒绝了
-    if (text.includes("⚠️") || text.includes("❌")) {
-      // 弹窗提示错误
-      showMsg(text, true)
-      // 关闭侧边栏，因为任务其实没开始
-      sidebar.value.visible = false
-      sidebar.value.loading = false
-      return
+    const created = await apiFetch(`/media/${id}/analysis-tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    const controller = new AbortController()
+    pollingTimers.value[id] = {
+      type: 'ai',
+      taskId: created.taskId,
+      controller
     }
-
-    // 5. 如果成功 (包含 "✅" 或 "🚀")，开始轮询
-    startPolling(id, 'ai')
-    // 在侧边栏显示后端返回的提示 (比如 "✅ 任务已投递至 RocketMQ")
-    sidebar.value.content = text + "\n\n⏳ 等待消费者接单处理..."
-
+    const terminal = await pollAnalysisTask({
+      taskId: created.taskId,
+      apiFetch,
+      signal: controller.signal,
+      onUpdate: (task) => {
+        sidebar.value.loading = false
+        sidebar.value.content = [
+          `任务编号：${task.taskId}`,
+          `状态：${task.status}`,
+          `阶段：${task.currentStage || '等待调度'}`,
+          `进度：${task.progress ?? 0}%`,
+          task.errorMessage ? `错误：${task.errorMessage}` : ''
+        ].filter(Boolean).join('\n\n')
+      }
+    })
+    if (terminal.status === 'SUCCESS') {
+      await fetchList()
+      const completed = list.value.find(item => item.id === id)
+      sidebar.value.content = completed?.aiSummary || '分析已完成'
+      sidebar.value.loading = false
+      showMsg('✅ AI 分析完成')
+    } else {
+      sidebar.value.content = terminal.errorMessage || `任务已结束：${terminal.status}`
+      sidebar.value.loading = false
+      showMsg(`⚠️ AI 任务已结束：${terminal.status}`, true)
+    }
   } catch (e) {
-    sidebar.value.content = "Error: " + e
-    sidebar.value.loading = false
+    if (e.name !== 'AbortError') {
+      sidebar.value.content = "Error: " + e.message
+      sidebar.value.loading = false
+      showMsg('❌ AI 分析任务提交或查询失败', true)
+    }
+  } finally {
+    delete pollingTimers.value[id]
   }
 }
 
@@ -759,6 +784,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   uploadManager.dispose()
+  Object.values(pollingTimers.value).forEach((polling) => {
+    polling.controller?.abort()
+    if (polling.timer) clearInterval(polling.timer)
+  })
 })
 </script>
 
