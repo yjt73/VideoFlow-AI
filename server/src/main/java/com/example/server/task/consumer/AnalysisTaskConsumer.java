@@ -8,6 +8,7 @@ import com.example.server.task.mq.AnalysisTaskMessage;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.service.AnalysisTaskStateService;
 import com.example.server.task.service.TaskProgressUpdate;
+import com.example.server.task.service.TaskFailureRecorder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -48,6 +49,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
     private final AiService aiService;
     private final AnalysisTaskMapper taskMapper;
     private final AnalysisTaskStateService stateService;
+    private final TaskFailureRecorder failureRecorder;
     private final RedissonClient redissonClient;
     private final TaskExceptionClassifier exceptionClassifier;
 
@@ -56,6 +58,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
             AiService aiService,
             AnalysisTaskMapper taskMapper,
             AnalysisTaskStateService stateService,
+            TaskFailureRecorder failureRecorder,
             RedissonClient redissonClient,
             TaskExceptionClassifier exceptionClassifier
     ) {
@@ -63,6 +66,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
         this.aiService = aiService;
         this.taskMapper = taskMapper;
         this.stateService = stateService;
+        this.failureRecorder = failureRecorder;
         this.redissonClient = redissonClient;
         this.exceptionClassifier = exceptionClassifier;
     }
@@ -88,7 +92,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
                 );
                 return;
             }
-            execute(message);
+            execute(message, payload);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new RetryableTaskException(
@@ -102,7 +106,7 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
         }
     }
 
-    private void execute(AnalysisTaskMessage message) {
+    private void execute(AnalysisTaskMessage message, String rawMessage) {
         AnalysisTask task = findTask(message.taskId());
         if (task == null || TERMINAL.contains(task.getStatus())) {
             return;
@@ -135,13 +139,26 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
                     TaskProgressUpdate.reset(100, "COMPLETED")
             );
         } catch (RuntimeException failure) {
-            handleFailure(message.taskId(), failure);
+            handleFailure(task, failure, rawMessage);
         }
     }
 
-    private void handleFailure(String taskId, RuntimeException failure) {
+    private void handleFailure(
+            AnalysisTask task,
+            RuntimeException failure,
+            String rawMessage
+    ) {
+        String taskId = task.getTaskId();
         if (exceptionClassifier.classify(failure)
                 == TaskFailureType.PERMANENT) {
+            failureRecorder.record(
+                    taskId,
+                    "PERMANENT",
+                    retryCount(task),
+                    "PERMANENT_ERROR",
+                    failure,
+                    rawMessage
+            );
             stateService.transition(
                     taskId,
                     Set.of(RUNNING),
@@ -155,6 +172,15 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
             );
             return;
         }
+        int nextRetryCount = retryCount(task) + 1;
+        failureRecorder.record(
+                taskId,
+                "RETRYABLE",
+                nextRetryCount,
+                "RETRYABLE_ERROR",
+                failure,
+                rawMessage
+        );
         stateService.transition(
                 taskId,
                 Set.of(RUNNING),
@@ -170,6 +196,10 @@ public class AnalysisTaskConsumer implements RocketMQListener<String> {
                 "Retryable analysis failure for task " + taskId,
                 failure
         );
+    }
+
+    private int retryCount(AnalysisTask task) {
+        return task.getRetryCount() == null ? 0 : task.getRetryCount();
     }
 
     private AnalysisTask findTask(String taskId) {

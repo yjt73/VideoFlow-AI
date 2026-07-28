@@ -7,6 +7,7 @@ import com.example.server.task.domain.AnalysisTaskStatus;
 import com.example.server.task.mq.AnalysisTaskMessage;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.service.AnalysisTaskStateService;
+import com.example.server.task.service.TaskFailureRecorder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,6 +34,7 @@ class AnalysisTaskConsumerTest {
     private AiService aiService;
     private AnalysisTaskMapper taskMapper;
     private AnalysisTaskStateService stateService;
+    private TaskFailureRecorder failureRecorder;
     private RedissonClient redissonClient;
     private RLock lock;
     private AnalysisTaskConsumer consumer;
@@ -41,6 +44,7 @@ class AnalysisTaskConsumerTest {
         aiService = mock(AiService.class);
         taskMapper = mock(AnalysisTaskMapper.class);
         stateService = mock(AnalysisTaskStateService.class);
+        failureRecorder = mock(TaskFailureRecorder.class);
         redissonClient = mock(RedissonClient.class);
         lock = mock(RLock.class);
         when(redissonClient.getLock("lock:analysis:task:task-1"))
@@ -58,6 +62,7 @@ class AnalysisTaskConsumerTest {
                 aiService,
                 taskMapper,
                 stateService,
+                failureRecorder,
                 redissonClient,
                 new TaskExceptionClassifier()
         );
@@ -86,6 +91,15 @@ class AnalysisTaskConsumerTest {
     }
 
     @Test
+    void ignoresDuplicateMessagesAfterTheTaskReachedATerminalState() {
+        when(taskMapper.selectOne(any())).thenReturn(task(SUCCESS));
+
+        consumer.onMessage(jsonMessage());
+
+        verify(aiService, never()).analyze(any(), any());
+    }
+
+    @Test
     void marksRetryingAndRethrowsRetryableFailuresToRocketMq() {
         when(taskMapper.selectOne(any())).thenReturn(task(QUEUED));
         doThrow(new DependencyUnavailableException("AI unavailable"))
@@ -101,6 +115,14 @@ class AnalysisTaskConsumerTest {
                 any()
         );
         verify(lock).unlock();
+        verify(failureRecorder).record(
+                eq("task-1"),
+                eq("RETRYABLE"),
+                eq(1),
+                eq("RETRYABLE_ERROR"),
+                any(),
+                eq(jsonMessage())
+        );
     }
 
     private AnalysisTask task(AnalysisTaskStatus status) {

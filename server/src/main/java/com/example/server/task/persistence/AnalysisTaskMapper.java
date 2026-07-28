@@ -18,6 +18,11 @@ public interface AnalysisTaskMapper extends BaseMapper<AnalysisTask> {
             <set>
                 status = #{toStatus},
                 version = version + 1,
+                retry_count = CASE
+                    WHEN #{toStatus} = 'RETRYING'
+                    THEN retry_count + 1
+                    ELSE retry_count
+                END,
                 updated_at = CURRENT_TIMESTAMP,
                 <if test="update.progress != null">
                     progress = #{update.progress},
