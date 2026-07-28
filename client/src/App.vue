@@ -94,8 +94,23 @@
             </div>
 
             <div class="magnet-content busy" v-else>
-              <div class="quantum-loader"></div>
-              <span class="busy-text">正在建立通道并解析资源...</span>
+              <div
+                  v-if="!['paused', 'failed'].includes(uploadTask.state)"
+                  class="quantum-loader"
+              ></div>
+              <span class="busy-text">{{ uploadStatusText }}</span>
+              <div class="upload-progress-track">
+                <div
+                    class="upload-progress-fill"
+                    :style="{ width: `${uploadDisplayProgress}%` }"
+                ></div>
+              </div>
+              <span class="upload-progress-label">{{ uploadDisplayProgress }}%</span>
+              <div class="upload-controls">
+                <button v-if="canPauseUpload" @click.stop="pauseUpload">暂停上传</button>
+                <button v-if="canResumeUpload" @click.stop="resumeUpload">继续上传</button>
+                <button class="danger" @click.stop="cancelUpload">取消上传</button>
+              </div>
             </div>
 
             <div class="border-glow"></div>
@@ -232,9 +247,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { marked } from 'marked'
 import { apiFetch, clearToken, getToken, setToken } from './api'
+import { calculateChunkMd5, calculateFileMd5 } from './upload/md5'
+import { UploadManager, UPLOAD_STATES } from './upload/uploadManager'
 
 // --- 变量定义 ---
 const file = ref(null)
@@ -253,6 +270,62 @@ const authError = ref(false)
 const authForm = ref({ username: '', password: '', nickname: '' })
 // 按媒体 ID 保存轮询定时器，避免同一任务被重复轮询。
 const pollingTimers = ref({})
+const uploadTask = ref({
+  state: UPLOAD_STATES.IDLE,
+  progress: 0,
+  hashProgress: 0,
+  retryCount: 0,
+  lastError: null
+})
+
+const activeUploadStates = new Set([
+  UPLOAD_STATES.HASHING,
+  UPLOAD_STATES.UPLOADING,
+  UPLOAD_STATES.RETRYING,
+  UPLOAD_STATES.PAUSED,
+  UPLOAD_STATES.MERGING,
+  UPLOAD_STATES.FAILED
+])
+
+const uploadManager = new UploadManager({
+  apiFetch,
+  calculateFileMd5,
+  calculateChunkMd5,
+  onChange: (snapshot) => {
+    uploadTask.value = snapshot
+    uploading.value = activeUploadStates.has(snapshot.state)
+  }
+})
+
+const uploadDisplayProgress = computed(() => (
+  uploadTask.value.state === UPLOAD_STATES.HASHING
+    ? uploadTask.value.hashProgress
+    : uploadTask.value.progress
+))
+
+const uploadStatusText = computed(() => {
+  const labels = {
+    [UPLOAD_STATES.HASHING]: '正在计算文件 MD5...',
+    [UPLOAD_STATES.UPLOADING]: '正在并发上传分片...',
+    [UPLOAD_STATES.RETRYING]: `服务暂时不可用，正在第 ${uploadTask.value.retryCount} 次重试...`,
+    [UPLOAD_STATES.PAUSED]: '上传已暂停，可在服务恢复后继续',
+    [UPLOAD_STATES.MERGING]: '分片完成，正在校验并合并...',
+    [UPLOAD_STATES.FAILED]: uploadTask.value.lastError || '上传失败'
+  }
+  return labels[uploadTask.value.state] || '正在处理上传任务...'
+})
+
+const canPauseUpload = computed(() => [
+  UPLOAD_STATES.HASHING,
+  UPLOAD_STATES.UPLOADING,
+  UPLOAD_STATES.RETRYING,
+  UPLOAD_STATES.MERGING
+].includes(uploadTask.value.state))
+
+const canResumeUpload = computed(() => [
+  UPLOAD_STATES.PAUSED,
+  UPLOAD_STATES.FAILED
+].includes(uploadTask.value.state))
 
 // Markdown 解析
 // 清理模型思考标签，并将分析内容渲染为 Markdown HTML。
@@ -301,72 +374,45 @@ const handleDrop = async (e) => {
   await uploadFile()
 }
 
-// 浏览器只切割上传数据，不修改用户选择的原始视频文件。
-const CHUNK_SIZE = 5 * 1024 * 1024
-
-// 使用分片和断点续传方式上传当前选择的视频。
+// 计算内容哈希后执行秒传检查、三路并发分片上传和幂等合并。
 const uploadFile = async () => {
   if (!file.value) return
-  uploading.value = true
-  const selectedFile = file.value
-  // 根据固定分片大小计算任务总数，作为前后端共同的完整性约束。
-  const totalChunks = Math.ceil(selectedFile.size / CHUNK_SIZE)
-  const storageKey = `upload:${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}`
-
   try {
-    let uploadId = localStorage.getItem(storageKey)
-    let uploadedChunks = new Set()
-
-    // 本地保存 uploadId，刷新页面后可从服务端查询已上传编号并继续上传。
-    if (uploadId) {
-      try {
-        uploadedChunks = new Set(
-          await apiFetch(`/media/upload-status?uploadId=${encodeURIComponent(uploadId)}`)
-        )
-      } catch {
-        localStorage.removeItem(storageKey)
-        uploadId = null
-      }
+    await uploadManager.start(file.value, currentUser.value.id)
+    if (uploadTask.value.state === UPLOAD_STATES.COMPLETED) {
+      showMsg(uploadTask.value.deduplicated ? '✅ 文件已存在，秒传完成' : '✅ 本地上传完成')
+      await fetchList()
+    } else if (uploadTask.value.state === UPLOAD_STATES.PAUSED) {
+      showMsg('⚠️ 自动重试已达到上限，上传已暂停', true)
+    } else if (uploadTask.value.state === UPLOAD_STATES.FAILED) {
+      showMsg('❌ 上传失败: ' + uploadTask.value.lastError, true)
     }
-
-    if (!uploadId) {
-      const params = new URLSearchParams({
-        filename: selectedFile.name,
-        totalChunks: String(totalChunks)
-      })
-      uploadId = await apiFetch(`/media/init-upload?${params}`, { method: 'POST' })
-      localStorage.setItem(storageKey, uploadId)
-    }
-
-    for (let index = 0; index < totalChunks; index++) {
-      if (uploadedChunks.has(index)) continue
-
-      message.value = `正在上传分片 ${index + 1}/${totalChunks}...`
-      const formData = new FormData()
-      formData.append('uploadId', uploadId)
-      formData.append('chunkIndex', String(index))
-      formData.append('totalChunks', String(totalChunks))
-      // Blob.slice 只取当前字节区间，并通过 multipart/form-data 发送给后端。
-      formData.append('file', selectedFile.slice(index * CHUNK_SIZE, Math.min(selectedFile.size, (index + 1) * CHUNK_SIZE)))
-
-      await apiFetch('/media/upload-chunk', {
-        method: 'POST',
-        body: formData
-      })
-    }
-
-    message.value = '分片上传完成，正在合并文件...'
-    const completeParams = new URLSearchParams({ uploadId })
-    await apiFetch(`/media/complete-upload?${completeParams}`, { method: 'POST' })
-
-    localStorage.removeItem(storageKey)
-    showMsg('✅ 本地上传完成')
-    fetchList()
   } catch (error) {
     console.error(error)
     showMsg('❌ 上传失败: ' + error.message, true)
-  } finally {
-    uploading.value = false
+  }
+}
+
+const pauseUpload = () => {
+  uploadManager.pause()
+  showMsg('上传已暂停')
+}
+
+const resumeUpload = async () => {
+  await uploadManager.resume()
+  if (uploadTask.value.state === UPLOAD_STATES.COMPLETED) {
+    showMsg('✅ 上传已恢复并完成')
+    await fetchList()
+  }
+}
+
+const cancelUpload = async () => {
+  try {
+    await uploadManager.cancel()
+    file.value = null
+    showMsg('上传任务已取消')
+  } catch (error) {
+    showMsg('❌ 取消上传失败: ' + error.message, true)
   }
 }
 
@@ -694,6 +740,7 @@ const handleAuth = async () => {
 }
 // 清除本地登录信息和用户相关页面状态。
 const logout = () => {
+  void uploadManager.cancel()
   currentUser.value = null
   clearToken()
   localStorage.removeItem('user')
@@ -708,6 +755,10 @@ onMounted(() => {
     } catch(e) {}
   }
   fetchList()
+})
+
+onBeforeUnmount(() => {
+  uploadManager.dispose()
 })
 </script>
 
@@ -849,6 +900,14 @@ html, body, #app {
   background: var(--bg-card); position: relative; z-index: 50;
 }
 .busy-text { margin-top: 15px; color: var(--accent-lime); font-family: monospace; animation: pulse-lime 2s infinite; }
+.upload-progress-track { width: min(360px, 70%); height: 8px; margin-top: 16px; background: var(--border-tech); border-radius: 999px; overflow: hidden; }
+.upload-progress-fill { height: 100%; background: var(--accent-lime); box-shadow: 0 0 12px var(--accent-lime); transition: width 0.2s ease; }
+.upload-progress-label { margin-top: 6px; color: var(--text-sub); font-family: monospace; font-size: 0.8rem; }
+.upload-controls { display: flex; gap: 10px; margin-top: 16px; }
+.upload-controls button { border: 1px solid var(--accent-lime); background: transparent; color: var(--accent-lime); padding: 8px 16px; border-radius: 4px; cursor: pointer; }
+.upload-controls button:hover { background: var(--accent-lime); color: var(--text-inverse); }
+.upload-controls button.danger { border-color: #ff4757; color: #ff4757; }
+.upload-controls button.danger:hover { background: #ff4757; color: #fff; }
 /* === [END] 重构结束 === */
 
 .notification-bar { margin-top: 2rem; display: inline-block; background: var(--accent-lime); color: var(--text-inverse); padding: 10px 24px; font-weight: 700; border-radius: 4px; clip-path: polygon(5% 0%, 100% 0%, 95% 100%, 0% 100%); }
