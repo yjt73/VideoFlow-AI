@@ -123,6 +123,35 @@ class AnalysisTaskControllerTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void exposesOwnerRetryAndCancelCommands() throws Exception {
+        when(taskService.retry(
+                "550e8400-e29b-41d4-a716-446655440000",
+                3L
+        )).thenReturn(new TaskCommandView(
+                "550e8400-e29b-41d4-a716-446655440000",
+                AnalysisTaskStatus.PENDING
+        ));
+        when(taskService.cancel(
+                "660e8400-e29b-41d4-a716-446655440000",
+                3L
+        )).thenReturn(new TaskCommandView(
+                "660e8400-e29b-41d4-a716-446655440000",
+                AnalysisTaskStatus.CANCELLED
+        ));
+
+        mockMvc.perform(post(
+                        "/tasks/550e8400-e29b-41d4-a716-446655440000/retry"
+                ).header("Authorization", "Bearer " + tokenFor(3L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING"));
+        mockMvc.perform(post(
+                        "/tasks/660e8400-e29b-41d4-a716-446655440000/cancel"
+                ).header("Authorization", "Bearer " + tokenFor(3L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"));
+    }
+
     private String tokenFor(Long userId) {
         User user = new User();
         user.setId(userId);

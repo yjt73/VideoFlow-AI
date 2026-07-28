@@ -42,4 +42,24 @@ public class AnalysisTaskController {
                 taskService.findOwned(taskId, currentUser.userId())
         );
     }
+
+    @PostMapping("/tasks/{taskId}/retry")
+    public ApiResponse<TaskCommandView> retry(
+            @PathVariable String taskId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        return ApiResponse.success(
+                taskService.retry(taskId, currentUser.userId())
+        );
+    }
+
+    @PostMapping("/tasks/{taskId}/cancel")
+    public ApiResponse<TaskCommandView> cancel(
+            @PathVariable String taskId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        return ApiResponse.success(
+                taskService.cancel(taskId, currentUser.userId())
+        );
+    }
 }

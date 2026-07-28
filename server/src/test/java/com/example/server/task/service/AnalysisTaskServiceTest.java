@@ -31,6 +31,7 @@ class AnalysisTaskServiceTest {
     private AnalysisTaskMapper taskMapper;
     private OutboxEventMapper outboxEventMapper;
     private OutboxEventFactory outboxEventFactory;
+    private AnalysisTaskStateService stateService;
     private AnalysisTaskService service;
 
     @BeforeEach
@@ -39,11 +40,13 @@ class AnalysisTaskServiceTest {
         taskMapper = mock(AnalysisTaskMapper.class);
         outboxEventMapper = mock(OutboxEventMapper.class);
         outboxEventFactory = mock(OutboxEventFactory.class);
+        stateService = mock(AnalysisTaskStateService.class);
         service = new AnalysisTaskService(
                 mediaFileMapper,
                 taskMapper,
                 outboxEventMapper,
-                outboxEventFactory
+                outboxEventFactory,
+                stateService
         );
     }
 
@@ -94,10 +97,67 @@ class AnalysisTaskServiceTest {
                 );
     }
 
+    @Test
+    void letsTheOwnerRetryADeadTaskThroughANewOutboxEvent() {
+        AnalysisTask task = task("task-1", 3L, AnalysisTaskStatus.DEAD);
+        when(taskMapper.selectOne(any())).thenReturn(task);
+        when(stateService.transition(any(), any(), any(), any()))
+                .thenReturn(true);
+        OutboxEvent event = new OutboxEvent();
+        when(outboxEventFactory.manualRetryRequested(task))
+                .thenReturn(event);
+
+        var result = service.retry("task-1", 3L);
+
+        assertThat(result.status()).isEqualTo(AnalysisTaskStatus.PENDING);
+        verify(outboxEventMapper).insert(event);
+    }
+
+    @Test
+    void letsTheOwnerCancelAQueuedTask() {
+        when(taskMapper.selectOne(any())).thenReturn(
+                task("task-1", 3L, AnalysisTaskStatus.QUEUED)
+        );
+        when(stateService.transition(any(), any(), any(), any()))
+                .thenReturn(true);
+
+        var result = service.cancel("task-1", 3L);
+
+        assertThat(result.status()).isEqualTo(AnalysisTaskStatus.CANCELLED);
+        verify(outboxEventMapper, never()).insert(any(OutboxEvent.class));
+    }
+
+    @Test
+    void rejectsCommandsFromAnotherUser() {
+        when(taskMapper.selectOne(any())).thenReturn(
+                task("task-1", 8L, AnalysisTaskStatus.DEAD)
+        );
+
+        assertThatThrownBy(() -> service.retry("task-1", 3L))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getErrorCode())
+                                .isEqualTo(ErrorCode.FORBIDDEN)
+                );
+    }
+
     private MediaFile media(Long id, Long userId) {
         MediaFile media = new MediaFile();
         media.setId(id);
         media.setUserId(userId);
         return media;
+    }
+
+    private AnalysisTask task(
+            String taskId,
+            Long userId,
+            AnalysisTaskStatus status
+    ) {
+        AnalysisTask task = new AnalysisTask();
+        task.setTaskId(taskId);
+        task.setMediaId(7L);
+        task.setUserId(userId);
+        task.setStatus(status);
+        task.setVersion(0L);
+        return task;
     }
 }

@@ -24,6 +24,17 @@ public class OutboxEventFactory {
     }
 
     public OutboxEvent analysisRequested(AnalysisTask task) {
+        return requested(task, "ANALYSIS_REQUESTED_0");
+    }
+
+    public OutboxEvent manualRetryRequested(AnalysisTask task) {
+        return requested(
+                task,
+                "ANALYSIS_MANUAL_RETRY_" + UUID.randomUUID()
+        );
+    }
+
+    private OutboxEvent requested(AnalysisTask task, String eventType) {
         AnalysisTaskMessage message = new AnalysisTaskMessage(
                 task.getTaskId(),
                 task.getMediaId(),
@@ -34,7 +45,7 @@ public class OutboxEventFactory {
         OutboxEvent event = new OutboxEvent();
         event.setEventId(UUID.randomUUID().toString());
         event.setAggregateId(task.getTaskId());
-        event.setEventType("ANALYSIS_REQUESTED_0");
+        event.setEventType(eventType);
         event.setTopic(ANALYSIS_TOPIC);
         event.setPayload(toJson(message));
         event.setStatus(OutboxStatus.PENDING);
