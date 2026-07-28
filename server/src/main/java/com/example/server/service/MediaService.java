@@ -1,5 +1,12 @@
 package com.example.server.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.example.server.api.BusinessException;
+import com.example.server.api.DependencyUnavailableException;
+import com.example.server.api.ErrorCode;
+import com.example.server.dto.UploadCheckRequest;
+import com.example.server.dto.UploadCheckResponse;
+import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.utils.MinioUtils;
@@ -54,10 +61,49 @@ public class MediaService {
         if (!dir.exists()) dir.mkdirs();
     }
 
-    public String initChunkedUpload(String filename, int totalChunks, Long userId) throws IOException {
+    public UploadCheckResponse checkUpload(UploadCheckRequest request, Long userId) {
+        validateFileMd5(request.fileMd5());
+        MediaFile existing = findOwnedMedia(userId, request.fileMd5());
+        if (existing != null) {
+            return new UploadCheckResponse(
+                    UploadState.COMPLETED,
+                    null,
+                    Set.of(),
+                    true,
+                    existing
+            );
+        }
+
+        if (request.uploadId() != null && !request.uploadId().isBlank()) {
+            Map<Object, Object> metadata = requireUpload(request.uploadId());
+            requireOwner(metadata, userId);
+            if (!request.fileMd5().equals(String.valueOf(metadata.get("fileMd5")))
+                    || request.totalChunks() != Integer.parseInt(String.valueOf(metadata.get("totalChunks")))) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "上传任务与当前文件不匹配");
+            }
+            return new UploadCheckResponse(
+                    UploadState.UPLOADING,
+                    request.uploadId(),
+                    getUploadedChunks(request.uploadId(), userId),
+                    false,
+                    null
+            );
+        }
+
+        String uploadId = initChunkedUpload(
+                request.filename(),
+                request.fileMd5(),
+                request.totalChunks(),
+                userId
+        );
+        return new UploadCheckResponse(UploadState.NEW, uploadId, Set.of(), false, null);
+    }
+
+    public String initChunkedUpload(String filename, String fileMd5, int totalChunks, Long userId) {
         if (filename == null || filename.isBlank()) {
             throw new IllegalArgumentException("filename is required");
         }
+        validateFileMd5(fileMd5);
         if (totalChunks <= 0) {
             throw new IllegalArgumentException("totalChunks must be greater than 0");
         }
@@ -66,13 +112,20 @@ public class MediaService {
         String redisKey = CHUNK_UPLOAD_KEY_PREFIX + uploadId;
         Map<String, String> metadata = new HashMap<>();
         metadata.put("filename", filename);
+        metadata.put("fileMd5", fileMd5);
         metadata.put("totalChunks", String.valueOf(totalChunks));
+        metadata.put("status", "UPLOADING");
         if (userId != null) {
             metadata.put("userId", String.valueOf(userId));
         }
         redisTemplate.opsForHash().putAll(redisKey, metadata);
         redisTemplate.expire(redisKey, 1, TimeUnit.DAYS);
-        Files.createDirectories(uploadDirectory(uploadId));
+        try {
+            Files.createDirectories(uploadDirectory(uploadId));
+        } catch (IOException e) {
+            redisTemplate.delete(redisKey);
+            throw new DependencyUnavailableException("无法创建上传临时目录", e);
+        }
         return uploadId;
     }
 
@@ -206,18 +259,35 @@ public class MediaService {
         Map<Object, Object> metadata = redisTemplate.opsForHash()
                 .entries(CHUNK_UPLOAD_KEY_PREFIX + uploadId);
         if (metadata.isEmpty()) {
-            throw new IllegalArgumentException("uploadId does not exist or has expired");
+            throw new BusinessException(ErrorCode.NOT_FOUND, "上传任务不存在或已过期");
         }
         return metadata;
     }
 
     private Map<Object, Object> requireOwnedUpload(String uploadId, Long userId) {
         Map<Object, Object> metadata = requireUpload(uploadId);
+        requireOwner(metadata, userId);
+        return metadata;
+    }
+
+    private void requireOwner(Map<Object, Object> metadata, Long userId) {
         Object ownerId = metadata.get("userId");
         if (ownerId == null || !String.valueOf(userId).equals(String.valueOf(ownerId))) {
             throw new AccessDeniedException("无权访问他人的上传任务");
         }
-        return metadata;
+    }
+
+    private MediaFile findOwnedMedia(Long userId, String contentHash) {
+        return mediaFileMapper.selectOne(new QueryWrapper<MediaFile>()
+                .eq("user_id", userId)
+                .eq("content_hash", contentHash)
+                .last("LIMIT 1"));
+    }
+
+    private void validateFileMd5(String fileMd5) {
+        if (fileMd5 == null || !fileMd5.matches("^[a-f0-9]{32}$")) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "fileMd5 必须是32位小写MD5");
+        }
     }
 
     private Path uploadDirectory(String uploadId) {

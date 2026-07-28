@@ -6,6 +6,8 @@ import com.example.server.api.BusinessException;
 import com.example.server.api.DependencyUnavailableException;
 import com.example.server.api.ErrorCode;
 import com.example.server.auth.AuthenticatedUser;
+import com.example.server.dto.UploadCheckRequest;
+import com.example.server.dto.UploadCheckResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.MediaService;
@@ -13,6 +15,7 @@ import com.example.server.utils.MinioUtils;
 import com.example.server.utils.YtDlpUtils; //确保导入这个
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -57,13 +60,24 @@ public class MediaController {
     1.为redis中注入key为upload:chunked:{uploadId}的键值对
     2.创建路径为/tmp/dovideo-chunks/550e8400-e29b-41d4-a716-446655440000的文件夹*/
     public ApiResponse<String> initUpload(@RequestParam String filename,
+                                          @RequestParam String fileMd5,
                                           @RequestParam int totalChunks,
                                           @AuthenticationPrincipal AuthenticatedUser currentUser) throws Exception {
         return ApiResponse.success(mediaService.initChunkedUpload(
                 filename,
+                fileMd5,
                 totalChunks,
                 currentUser.userId()
         ));
+    }
+
+    /** 统一检查秒传、已有上传会话和新上传任务。 */
+    @PostMapping("/check-upload")
+    public ApiResponse<UploadCheckResponse> checkUpload(
+            @Valid @RequestBody UploadCheckRequest request,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        return ApiResponse.success(mediaService.checkUpload(request, currentUser.userId()));
     }
 
     @GetMapping("/upload-status")
