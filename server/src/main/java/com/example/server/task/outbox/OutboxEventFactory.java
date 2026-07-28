@@ -34,6 +34,16 @@ public class OutboxEventFactory {
         );
     }
 
+    public OutboxEvent compensationRequested(
+            AnalysisTask task,
+            int generation
+    ) {
+        return requested(
+                task,
+                "ANALYSIS_COMPENSATION_" + generation
+        );
+    }
+
     private OutboxEvent requested(AnalysisTask task, String eventType) {
         AnalysisTaskMessage message = new AnalysisTaskMessage(
                 task.getTaskId(),

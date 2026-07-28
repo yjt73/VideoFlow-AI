@@ -11,6 +11,19 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface AnalysisTaskMapper extends BaseMapper<AnalysisTask> {
 
+    @Update("""
+            UPDATE analysis_tasks
+            SET compensation_count = compensation_count + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = #{taskId}
+              AND status = 'PENDING'
+              AND compensation_count = #{expectedCount}
+            """)
+    int incrementCompensation(
+            @Param("taskId") String taskId,
+            @Param("expectedCount") Integer expectedCount
+    );
+
     /** 使用当前状态和版本号原子推进任务，防止多个消费者同时成功抢占。 */
     @Update("""
             <script>
