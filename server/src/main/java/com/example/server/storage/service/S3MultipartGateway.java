@@ -4,6 +4,7 @@ import com.example.server.storage.api.CompletedPartRequest;
 
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 
@@ -33,4 +34,6 @@ public interface S3MultipartGateway {
     boolean exists(String objectKey);
 
     List<String> listKeys(String prefix);
+
+    void put(String objectKey, Path file, String contentType);
 }

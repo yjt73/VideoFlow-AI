@@ -9,7 +9,7 @@ import com.example.server.dto.UploadCheckResponse;
 import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.utils.MinioUtils;
+import com.example.server.storage.service.ServerSideObjectIngestionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -20,7 +20,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RLock;
 import org.redisson.api.RReadWriteLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -28,6 +27,7 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.File;
 import java.util.Comparator;
 import java.util.Collection;
 import java.util.List;
@@ -43,7 +43,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 
 @ExtendWith(MockitoExtension.class)
@@ -58,7 +57,7 @@ class MediaServiceUploadTest {
     @Mock
     private StringRedisTemplate redisTemplate;
     @Mock
-    private MinioUtils minioUtils;
+    private ServerSideObjectIngestionService ingestionService;
     @Mock
     private RedissonClient redissonClient;
     @Mock
@@ -272,7 +271,7 @@ class MediaServiceUploadTest {
                 .satisfies(error -> assertThat(((BusinessException) error).getErrorCode())
                         .isEqualTo(ErrorCode.BAD_REQUEST));
 
-        verify(minioUtils, never()).uploadLocalFile(any(), any());
+        verify(ingestionService, never()).ingest(any(), any(), any(), any());
         assertThat(testUploadDirectory(CHUNK_UPLOAD_ID).resolve("part-0")).exists();
     }
 
@@ -285,7 +284,7 @@ class MediaServiceUploadTest {
         MediaFile result = mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L);
 
         assertThat(result).isSameAs(existing);
-        verify(minioUtils, never()).uploadLocalFile(any(), any());
+        verify(ingestionService, never()).ingest(any(), any(), any(), any());
     }
 
     @Test
@@ -293,7 +292,8 @@ class MediaServiceUploadTest {
         stubMergeUpload(FILE_MD5, "UPLOADING", null);
         writePart(CHUNK_UPLOAD_ID, 0, "hello");
         doThrow(new IllegalStateException("minio unavailable"))
-                .when(minioUtils).uploadLocalFile(any(), eq("demo.mp4"));
+                .when(ingestionService)
+                .ingest(any(File.class), eq("demo.mp4"), eq("video/mp4"), eq(1L));
 
         assertThatThrownBy(() -> mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L))
                 .isInstanceOf(DependencyUnavailableException.class);
@@ -302,20 +302,20 @@ class MediaServiceUploadTest {
     }
 
     @Test
-    void returnsExistingMediaOnDuplicateKeyConflict() throws Exception {
+    void returnsExistingMediaWhenIngestionDeduplicates() throws Exception {
         MediaFile existing = media(12L, 1L);
         stubMergeUpload(FILE_MD5, "UPLOADING", null);
         writePart(CHUNK_UPLOAD_ID, 0, "hello");
-        when(minioUtils.uploadLocalFile(any(), eq("demo.mp4")))
-                .thenReturn("http://minio/new-object.mp4");
-        when(mediaFileMapper.insert(any(MediaFile.class)))
-                .thenThrow(new DuplicateKeyException("duplicate"));
-        when(mediaFileMapper.selectOne(any(QueryWrapper.class))).thenReturn(existing);
+        when(ingestionService.ingest(
+                any(File.class),
+                eq("demo.mp4"),
+                eq("video/mp4"),
+                eq(1L)
+        )).thenReturn(existing);
 
         MediaFile result = mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L);
 
         assertThat(result).isSameAs(existing);
-        verify(minioUtils).removeFile("http://minio/new-object.mp4");
     }
 
     @Test
@@ -331,13 +331,13 @@ class MediaServiceUploadTest {
     void successfulMergePersistsHashAndBecomesIdempotent() throws Exception {
         stubMergeUpload(FILE_MD5, "UPLOADING", null);
         writePart(CHUNK_UPLOAD_ID, 0, "hello");
-        when(minioUtils.uploadLocalFile(any(), eq("demo.mp4")))
-                .thenReturn("http://minio/demo.mp4");
-        doAnswer(invocation -> {
-            MediaFile inserted = invocation.getArgument(0);
-            inserted.setId(21L);
-            return 1;
-        }).when(mediaFileMapper).insert(any(MediaFile.class));
+        MediaFile ingested = media(21L, 1L);
+        when(ingestionService.ingest(
+                any(File.class),
+                eq("demo.mp4"),
+                eq("video/mp4"),
+                eq(1L)
+        )).thenReturn(ingested);
 
         MediaFile result = mediaService.completeChunkedUpload(CHUNK_UPLOAD_ID, 1L);
 
@@ -384,24 +384,6 @@ class MediaServiceUploadTest {
                 .isInstanceOf(DependencyUnavailableException.class);
 
         verify(redisTemplate, never()).delete(any(Collection.class));
-    }
-
-    @Test
-    void regularUploadReturnsExistingMediaOnDuplicateKeyConflict() {
-        MediaFile existing = media(31L, 1L);
-        when(mediaFileMapper.insert(any(MediaFile.class)))
-                .thenThrow(new DuplicateKeyException("duplicate"));
-        when(mediaFileMapper.selectOne(any(QueryWrapper.class))).thenReturn(existing);
-
-        MediaFile result = mediaService.saveUploadedMedia(
-                "demo.mp4",
-                "http://minio/new-object.mp4",
-                FILE_MD5,
-                1L
-        );
-
-        assertThat(result).isSameAs(existing);
-        verify(minioUtils).removeFile("http://minio/new-object.mp4");
     }
 
     private UploadCheckRequest request(String uploadId) {

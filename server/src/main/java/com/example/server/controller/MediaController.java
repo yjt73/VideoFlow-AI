@@ -15,7 +15,7 @@ import com.example.server.service.MediaService;
 import com.example.server.storage.api.MediaAccessView;
 import com.example.server.storage.service.StorageAccessService;
 import com.example.server.storage.service.StorageReferenceDeletionService;
-import com.example.server.utils.MinioUtils;
+import com.example.server.storage.service.ServerSideObjectIngestionService;
 import com.example.server.utils.YtDlpUtils; //确保导入这个
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,9 +48,6 @@ public class MediaController {
     private ObjectMapper objectMapper;
 
     @Autowired
-    private MinioUtils minioUtils;
-
-    @Autowired
     private YtDlpUtils ytDlpUtils;
 
     @Autowired
@@ -61,6 +58,9 @@ public class MediaController {
 
     @Autowired
     private StorageReferenceDeletionService referenceDeletionService;
+
+    @Autowired
+    private ServerSideObjectIngestionService ingestionService;
 
     @PostMapping("/init-upload")
     /** 创建分片上传任务并返回 uploadId。 */
@@ -135,40 +135,6 @@ public class MediaController {
         return ApiResponse.success("上传任务已取消");
     }
 
-    @PostMapping("/upload")
-    /** 兼容小文件场景的一次性完整文件上传接口。 */
-    public ApiResponse<String> upload(@RequestParam("file") MultipartFile file,
-                                      @AuthenticationPrincipal AuthenticatedUser currentUser) {
-        if (file == null || file.isEmpty()) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "上传文件不能为空");
-        }
-        if (mediaFileMapper == null) {
-            throw new DependencyUnavailableException("数据库尚未就绪");
-        }
-        try {
-            String md5 = mediaService.calculateMd5(file);
-            System.out.println("Uploading to MinIO...");
-            String fileUrl = minioUtils.uploadFile(file);
-            System.out.println("MinIO upload success, url: " + fileUrl);
-
-            mediaService.saveUploadedMedia(
-                    file.getOriginalFilename(),
-                    fileUrl,
-                    md5,
-                    currentUser.userId()
-            );
-
-            String cacheKey = "media:list:user:" + currentUser.userId();
-            redisTemplate.delete(cacheKey);
-            System.out.println("Cache cleared: " + cacheKey);
-
-            return ApiResponse.success("Upload success");
-
-        } catch (Exception e) {
-            throw new DependencyUnavailableException("文件上传依赖暂时不可用", e);
-        }
-    }
-
     @PostMapping("/upload-url")
     /** 下载外部视频链接并将文件转存到对象存储。 */
     public ApiResponse<String> uploadUrl(@RequestParam("url") String url,
@@ -185,13 +151,11 @@ public class MediaController {
 
             tempFile = ytDlpUtils.downloadVideo(url);
 
-            String md5 = mediaService.calculateMd5(tempFile);
-            String fileUrl = minioUtils.uploadLocalFile(tempFile);
-
-            mediaService.saveUploadedMedia(
+            String contentType = java.nio.file.Files.probeContentType(tempFile.toPath());
+            ingestionService.ingest(
+                    tempFile,
                     "WEB_" + tempFile.getName(),
-                    fileUrl,
-                    md5,
+                    contentType == null ? "video/mp4" : contentType,
                     currentUser.userId()
             );
 

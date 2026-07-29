@@ -9,11 +9,10 @@ import com.example.server.dto.UploadCheckResponse;
 import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.utils.MinioUtils;
+import com.example.server.storage.service.ServerSideObjectIngestionService;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -54,7 +53,7 @@ public class MediaService {
     private StringRedisTemplate redisTemplate;
 
     @Autowired
-    private MinioUtils minioUtils;
+    private ServerSideObjectIngestionService ingestionService;
 
     @Autowired
     private RedissonClient redissonClient;
@@ -277,23 +276,25 @@ public class MediaService {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "整文件完整性校验失败");
             }
 
-            String fileUrl;
             try {
-                fileUrl = minioUtils.uploadLocalFile(mergedFile.toFile(), filename);
+                MediaFile mediaFile = ingestionService.ingest(
+                        mergedFile.toFile(),
+                        filename,
+                        "video/mp4",
+                        userId
+                );
+                markUploadCompleted(uploadId, mediaFile.getId());
+                invalidateMediaList(userId);
+                try {
+                    cleanupUploadFiles(uploadId);
+                } catch (Exception ignored) {
+                    // 数据库已成功入库，临时文件清理由后续维护任务兜底。
+                }
+                return mediaFile;
             } catch (Exception e) {
                 restoreUploadStatus(uploadId);
                 throw new DependencyUnavailableException("对象存储暂时不可用", e);
             }
-
-            MediaFile mediaFile = saveUploadedMedia(filename, fileUrl, expectedMd5, userId);
-            markUploadCompleted(uploadId, mediaFile.getId());
-            invalidateMediaList(userId);
-            try {
-                cleanupUploadFiles(uploadId);
-            } catch (Exception ignored) {
-                // 数据库已成功入库，临时文件清理由后续维护任务兜底。
-            }
-            return mediaFile;
         } catch (BusinessException e) {
             restoreUploadStatus(uploadId);
             throw e;
@@ -320,37 +321,6 @@ public class MediaService {
             }
         }
         return HexFormat.of().formatHex(digest.digest());
-    }
-
-    public MediaFile saveUploadedMedia(
-            String filename,
-            String fileUrl,
-            String contentHash,
-            Long userId
-    ) {
-        validateFileMd5(contentHash);
-        MediaFile mediaFile = new MediaFile();
-        mediaFile.setFilename(filename);
-        mediaFile.setFilePath(fileUrl);
-        mediaFile.setContentHash(contentHash);
-        mediaFile.setStatus("COMPLETED");
-        mediaFile.setUploadTime(LocalDateTime.now());
-        mediaFile.setUserId(userId);
-        try {
-            mediaFileMapper.insert(mediaFile);
-            rememberContentHash(mediaFile.getId(), contentHash);
-            return mediaFile;
-        } catch (DuplicateKeyException duplicate) {
-            minioUtils.removeFile(fileUrl);
-            MediaFile existing = findOwnedMedia(userId, contentHash);
-            if (existing == null) {
-                throw duplicate;
-            }
-            return existing;
-        } catch (Exception e) {
-            minioUtils.removeFile(fileUrl);
-            throw new DependencyUnavailableException("媒体记录保存失败", e);
-        }
     }
 
     public void cancelUpload(String uploadId, Long userId) {

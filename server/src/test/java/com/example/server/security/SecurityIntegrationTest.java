@@ -6,10 +6,10 @@ import com.example.server.mapper.UserMapper;
 import com.example.server.service.MediaService;
 import com.example.server.storage.service.StorageAccessService;
 import com.example.server.storage.service.StorageReferenceDeletionService;
+import com.example.server.storage.service.ServerSideObjectIngestionService;
 import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
-import com.example.server.utils.MinioUtils;
 import com.example.server.utils.YtDlpUtils;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,8 +58,6 @@ class SecurityIntegrationTest {
     @MockBean
     private StringRedisTemplate redisTemplate;
 
-    @MockBean
-    private MinioUtils minioUtils;
 
     @MockBean
     private YtDlpUtils ytDlpUtils;
@@ -70,6 +68,8 @@ class SecurityIntegrationTest {
     private StorageAccessService storageAccessService;
     @MockBean
     private StorageReferenceDeletionService referenceDeletionService;
+    @MockBean
+    private ServerSideObjectIngestionService ingestionService;
     @MockBean
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean

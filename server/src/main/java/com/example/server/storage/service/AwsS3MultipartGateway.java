@@ -15,7 +15,9 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
@@ -25,6 +27,7 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 
@@ -213,6 +216,22 @@ public class AwsS3MultipartGateway implements S3MultipartGateway {
                     .toList();
         } catch (RuntimeException exception) {
             throw new DependencyUnavailableException("对象存储暂时无法列举文件", exception);
+        }
+    }
+
+    @Override
+    public void put(String objectKey, Path file, String contentType) {
+        try {
+            s3Client.putObject(
+                    PutObjectRequest.builder()
+                            .bucket(properties.bucket())
+                            .key(objectKey)
+                            .contentType(contentType)
+                            .build(),
+                    RequestBody.fromFile(file)
+            );
+        } catch (RuntimeException exception) {
+            throw new DependencyUnavailableException("对象存储暂时无法导入文件", exception);
         }
     }
 
