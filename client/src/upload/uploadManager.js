@@ -1,4 +1,4 @@
-const DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024
+const DEFAULT_PART_SIZE = 5 * 1024 * 1024
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000, 30000, 30000]
 
 export const UPLOAD_STATES = Object.freeze({
@@ -17,19 +17,17 @@ class FlowInterrupted extends Error {}
 
 export class UploadManager {
   constructor({
-    apiFetch,
+    transport,
     calculateFileMd5,
-    calculateChunkMd5,
     storage = localStorage,
     concurrency = 3,
-    chunkSize = DEFAULT_CHUNK_SIZE,
+    chunkSize = DEFAULT_PART_SIZE,
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     onlineTarget = typeof window === 'undefined' ? null : window,
     onChange = () => {}
   }) {
-    this.apiFetch = apiFetch
+    this.transport = transport
     this.calculateFileMd5 = calculateFileMd5
-    this.calculateChunkMd5 = calculateChunkMd5
     this.storage = storage
     this.concurrency = concurrency
     this.chunkSize = chunkSize
@@ -54,9 +52,10 @@ export class UploadManager {
     this.file = null
     this.userId = null
     this.fileMd5 = null
-    this.uploadId = null
-    this.totalChunks = 0
-    this.uploadedChunks = new Set()
+    this.sessionId = null
+    this.totalParts = 0
+    this.partSize = this.chunkSize
+    this.completedParts = new Map()
     this.state = UPLOAD_STATES.IDLE
     this.retryCount = 0
     this.hashProgress = 0
@@ -69,11 +68,13 @@ export class UploadManager {
   }
 
   get snapshot() {
+    const completedParts = this.sortedCompletedParts()
     return {
       state: this.state,
-      uploadId: this.uploadId,
-      totalChunks: this.totalChunks,
-      uploadedChunks: [...this.uploadedChunks].sort((a, b) => a - b),
+      sessionId: this.sessionId,
+      totalParts: this.totalParts,
+      uploadedChunks: completedParts.map((part) => part.partNumber),
+      completedParts,
       retryCount: this.retryCount,
       hashProgress: this.hashProgress,
       progress: this.progress,
@@ -91,8 +92,9 @@ export class UploadManager {
     this.file = file
     this.userId = userId
     this.fileMd5 = null
-    this.totalChunks = Math.ceil(file.size / this.chunkSize)
-    this.uploadedChunks = new Set()
+    this.totalParts = Math.ceil(file.size / this.chunkSize)
+    this.partSize = this.chunkSize
+    this.completedParts = new Map()
     this.retryCount = 0
     this.progress = 0
     this.hashProgress = 0
@@ -103,22 +105,22 @@ export class UploadManager {
     this.setState(UPLOAD_STATES.HASHING)
 
     try {
-      const hashController = new AbortController()
-      this.controllers.add(hashController)
-      let fileMd5
+      const controller = this.createController()
       try {
-        fileMd5 = await this.calculateFileMd5(file, (progress) => {
+        this.fileMd5 = await this.calculateFileMd5(file, (progress) => {
           if (version !== this.runVersion) return
           this.hashProgress = progress
           this.emit()
-        }, { signal: hashController.signal })
+        }, { signal: controller.signal })
       } finally {
-        this.controllers.delete(hashController)
+        this.controllers.delete(controller)
       }
       this.ensureCurrent(version)
-      this.fileMd5 = fileMd5
       const check = await this.retryOperation(
-        () => this.checkUpload(version),
+        () => this.withController(
+          (signal) => this.transport.check(this.metadata(), signal),
+          version
+        ),
         version,
         'uploading'
       )
@@ -140,9 +142,7 @@ export class UploadManager {
 
   async resume() {
     if (!this.file) return null
-    if (!this.fileMd5) {
-      return this.start(this.file, this.userId)
-    }
+    if (!this.fileMd5) return this.start(this.file, this.userId)
     this.pausedByUser = false
     this.abortRequests()
     this.runVersion += 1
@@ -150,7 +150,10 @@ export class UploadManager {
     this.setState(UPLOAD_STATES.RETRYING)
     try {
       const check = await this.retryOperation(
-        () => this.checkUpload(version),
+        () => this.withController(
+          (signal) => this.transport.check(this.metadata(), signal),
+          version
+        ),
         version,
         this.resumeStage
       )
@@ -164,12 +167,10 @@ export class UploadManager {
     this.pausedByUser = true
     this.runVersion += 1
     this.abortRequests()
-    const uploadId = this.uploadId
-    if (uploadId) {
+    const sessionId = this.sessionId
+    if (sessionId) {
       try {
-        await this.apiFetch(`/media/upload?uploadId=${encodeURIComponent(uploadId)}`, {
-          method: 'DELETE'
-        })
+        await this.transport.abort(sessionId)
       } catch (error) {
         if (!isExpiredUpload(error)) throw error
       }
@@ -184,36 +185,20 @@ export class UploadManager {
     this.onlineTarget?.removeEventListener('online', this.handleOnline)
   }
 
-  async checkUpload(version) {
-    const storedUploadId = this.storage.getItem(this.storageKey())
-    const request = {
+  metadata() {
+    return {
       filename: this.file.name,
-      fileMd5: this.fileMd5,
-      totalChunks: this.totalChunks,
-      uploadId: storedUploadId || undefined
-    }
-    try {
-      return await this.request('/media/check-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request)
-      }, version)
-    } catch (error) {
-      if (!storedUploadId || !isExpiredUpload(error)) throw error
-      this.clearStoredUpload()
-      delete request.uploadId
-      return this.request('/media/check-upload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request)
-      }, version)
+      contentHash: this.fileMd5,
+      sizeBytes: this.file.size,
+      contentType: this.file.type || 'application/octet-stream',
+      totalParts: this.totalParts
     }
   }
 
   async continueFromCheck(check, version) {
     this.ensureCurrent(version)
     if (check.state === 'COMPLETED') {
-      this.deduplicated = Boolean(check.deduplicated)
+      this.deduplicated = true
       this.media = check.media
       this.progress = 100
       this.clearStoredUpload()
@@ -221,32 +206,39 @@ export class UploadManager {
       return check.media
     }
 
-    this.uploadId = check.uploadId
-    this.storage.setItem(this.storageKey(), this.uploadId)
-    this.uploadedChunks = new Set(check.uploadedChunks ?? [])
+    this.sessionId = check.sessionId
+    this.partSize = check.partSize
+    this.totalParts = check.totalParts
+    this.restoreCompletedParts()
+    this.persistUpload()
     this.updateProgress()
 
-    if (this.uploadedChunks.size >= this.totalChunks || this.resumeStage === 'merging') {
-      return this.merge(version)
+    if (this.completedParts.size >= this.totalParts || this.resumeStage === 'merging') {
+      return this.complete(version)
     }
-    return this.uploadMissingChunks(version)
+    return this.uploadMissingParts(version)
   }
 
-  async uploadMissingChunks(version) {
+  async uploadMissingParts(version) {
     this.resumeStage = 'uploading'
     this.setState(UPLOAD_STATES.UPLOADING)
-    const missing = Array.from({ length: this.totalChunks }, (_, index) => index)
-      .filter((index) => !this.uploadedChunks.has(index))
+    const missing = Array.from({ length: this.totalParts }, (_, index) => index + 1)
+      .filter((partNumber) => !this.completedParts.has(partNumber))
     let cursor = 0
 
     const worker = async () => {
       while (cursor < missing.length) {
         this.ensureCurrent(version)
-        const index = missing[cursor]
+        const partNumber = missing[cursor]
         cursor += 1
-        await this.retryOperation(() => this.uploadChunk(index, version), version, 'uploading')
+        const etag = await this.retryOperation(
+          () => this.uploadPart(partNumber, version),
+          version,
+          'uploading'
+        )
         this.ensureCurrent(version)
-        this.uploadedChunks.add(index)
+        this.completedParts.set(partNumber, etag)
+        this.persistUpload()
         this.updateProgress()
       }
     }
@@ -257,38 +249,38 @@ export class UploadManager {
         () => worker()
       ))
       this.ensureCurrent(version)
-      return await this.merge(version)
+      return await this.complete(version)
     } catch (error) {
       if (error instanceof FlowInterrupted) return null
       throw error
     }
   }
 
-  async uploadChunk(index, version) {
-    const start = index * this.chunkSize
-    const chunk = this.file.slice(start, Math.min(this.file.size, start + this.chunkSize))
-    const chunkMd5 = await this.calculateChunkMd5(chunk)
-    this.ensureCurrent(version)
-    const formData = new FormData()
-    formData.append('uploadId', this.uploadId)
-    formData.append('chunkIndex', String(index))
-    formData.append('totalChunks', String(this.totalChunks))
-    formData.append('chunkMd5', chunkMd5)
-    formData.append('file', chunk)
-    return this.request('/media/upload-chunk', {
-      method: 'POST',
-      body: formData
-    }, version)
+  uploadPart(partNumber, version) {
+    const start = (partNumber - 1) * this.partSize
+    const blob = this.file.slice(start, Math.min(this.file.size, start + this.partSize))
+    return this.withController(
+      (signal) => this.transport.uploadPart(
+        this.sessionId,
+        partNumber,
+        blob,
+        signal
+      ),
+      version
+    )
   }
 
-  async merge(version) {
+  async complete(version) {
     this.resumeStage = 'merging'
     if (this.mergePromise) return this.mergePromise
     this.setState(UPLOAD_STATES.MERGING)
     this.mergePromise = this.retryOperation(
-      () => this.request(
-        `/media/complete-upload?uploadId=${encodeURIComponent(this.uploadId)}`,
-        { method: 'POST' },
+      () => this.withController(
+        (signal) => this.transport.complete(
+          this.sessionId,
+          this.sortedCompletedParts(),
+          signal
+        ),
         version
       ),
       version,
@@ -324,6 +316,7 @@ export class UploadManager {
         this.resumeStage = stage
         if (failureCount >= RETRY_DELAYS_MS.length) {
           this.pausedByUser = false
+          this.abortRequests()
           this.setState(UPLOAD_STATES.PAUSED)
           throw new FlowInterrupted()
         }
@@ -337,15 +330,20 @@ export class UploadManager {
     }
   }
 
-  async request(path, options, version) {
+  async withController(operation, version) {
     this.ensureCurrent(version)
-    const controller = new AbortController()
-    this.controllers.add(controller)
+    const controller = this.createController()
     try {
-      return await this.apiFetch(path, { ...options, signal: controller.signal })
+      return await operation(controller.signal)
     } finally {
       this.controllers.delete(controller)
     }
+  }
+
+  createController() {
+    const controller = new AbortController()
+    this.controllers.add(controller)
+    return controller
   }
 
   abortRequests() {
@@ -368,7 +366,35 @@ export class UploadManager {
   }
 
   storageKey() {
-    return `upload:${this.userId}:${this.fileMd5}`
+    return `multipart-upload:${this.userId}:${this.fileMd5}`
+  }
+
+  persistUpload() {
+    this.storage.setItem(this.storageKey(), JSON.stringify({
+      sessionId: this.sessionId,
+      completedParts: this.sortedCompletedParts()
+    }))
+  }
+
+  restoreCompletedParts() {
+    this.completedParts = new Map()
+    const stored = this.storage.getItem(this.storageKey())
+    if (!stored) return
+    try {
+      const parsed = JSON.parse(stored)
+      if (parsed.sessionId !== this.sessionId || !Array.isArray(parsed.completedParts)) return
+      for (const part of parsed.completedParts) {
+        if (Number.isInteger(part.partNumber)
+          && part.partNumber >= 1
+          && part.partNumber <= this.totalParts
+          && typeof part.etag === 'string'
+          && part.etag) {
+          this.completedParts.set(part.partNumber, part.etag)
+        }
+      }
+    } catch {
+      this.clearStoredUpload()
+    }
   }
 
   clearStoredUpload() {
@@ -377,10 +403,16 @@ export class UploadManager {
     }
   }
 
+  sortedCompletedParts() {
+    return [...this.completedParts.entries()]
+      .map(([partNumber, etag]) => ({ partNumber, etag }))
+      .sort((left, right) => left.partNumber - right.partNumber)
+  }
+
   updateProgress() {
-    this.progress = this.totalChunks === 0
+    this.progress = this.totalParts === 0
       ? 0
-      : Math.round((this.uploadedChunks.size / this.totalChunks) * 100)
+      : Math.round((this.completedParts.size / this.totalParts) * 100)
     this.emit()
   }
 
@@ -400,5 +432,5 @@ const isRetryable = (error) => {
   if (error?.name === 'AbortError') return false
   if (error?.retryable) return true
   if (!error?.status) return true
-  return error.status === 503 || error.status >= 500
+  return error.status === 429 || error.status === 503 || error.status >= 500
 }

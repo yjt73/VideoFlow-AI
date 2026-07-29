@@ -150,6 +150,11 @@
             </div>
 
             <div class="action-dock">
+              <button class="dock-item" @click="playMedia(item)">
+                <span class="item-icon">▶</span>
+                <span class="item-label">播放视频</span>
+              </button>
+
               <button class="dock-item" @click="downloadAudio(item)">
                 <span class="item-icon">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
@@ -250,7 +255,8 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { marked } from 'marked'
 import { apiFetch, clearToken, getToken, setToken } from './api'
-import { calculateChunkMd5, calculateFileMd5 } from './upload/md5'
+import { calculateFileMd5 } from './upload/md5'
+import { MultipartTransport } from './upload/multipartTransport'
 import { UploadManager, UPLOAD_STATES } from './upload/uploadManager'
 import { pollAnalysisTask } from './analysis/taskPolling'
 
@@ -288,10 +294,10 @@ const activeUploadStates = new Set([
   UPLOAD_STATES.FAILED
 ])
 
+const multipartTransport = new MultipartTransport({ apiFetch })
 const uploadManager = new UploadManager({
-  apiFetch,
+  transport: multipartTransport,
   calculateFileMd5,
-  calculateChunkMd5,
   onChange: (snapshot) => {
     uploadTask.value = snapshot
     uploading.value = activeUploadStates.has(snapshot.state)
@@ -504,6 +510,23 @@ const formatTime = (timeStr) => {
   if (!timeStr) return '--'
   const date = new Date(timeStr)
   return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+// 播放前临时获取授权地址，媒体列表中不保存对象存储路径。
+const playMedia = async (item) => {
+  const playbackWindow = window.open('', '_blank')
+  try {
+    const url = await multipartTransport.accessUrl(item.id)
+    if (playbackWindow) {
+      playbackWindow.opener = null
+      playbackWindow.location.replace(url)
+    } else {
+      window.location.assign(url)
+    }
+  } catch (error) {
+    playbackWindow?.close()
+    showMsg('❌ 获取播放地址失败: ' + error.message, true)
+  }
 }
 
 // 请求后端生成音频并触发浏览器下载。
@@ -962,7 +985,7 @@ html, body, #app {
 .status-indicator.completed { color: var(--accent-lime); border: 1px solid var(--accent-lime); background: rgba(197, 249, 70, 0.1); }
 .status-indicator.processing { color: var(--accent-purple); border: 1px solid var(--accent-purple); animation: blink 1s infinite; }
 
-.action-dock { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 12px; padding: 12px; background: rgba(5, 8, 5, 0.5); }
+.action-dock { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 12px; background: rgba(5, 8, 5, 0.5); }
 .dock-item { position: relative; border: 1px solid var(--border-tech); background: var(--bg-card); border-radius: 8px; padding: 16px; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; transition: all 0.3s; color: var(--text-sub); font-family: monospace; overflow: hidden; }
 .dock-item:hover:not(:disabled) { color: var(--accent-lime); border-color: var(--accent-lime); background: rgba(197, 249, 70, 0.05); }
 .dock-item:disabled { opacity: 0.3; cursor: not-allowed; }
