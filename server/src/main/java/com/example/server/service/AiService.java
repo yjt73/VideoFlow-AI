@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import com.example.server.task.service.AiAnalysisResult;
+import com.example.server.storage.service.StorageAccessService;
 
 @Service
 public class AiService {
@@ -34,6 +35,9 @@ public class AiService {
     @Autowired
     private AgentLoopService agentLoopService;
 
+    @Autowired
+    private StorageAccessService storageAccessService;
+
     public AiAnalysisResult analyze(Long mediaId, String userGoal) {
         System.out.println(" [线程池] 开始处理任务，ID: " + mediaId);
 
@@ -43,7 +47,7 @@ public class AiService {
         }
 
         VideoContext videoContext =
-                videoContextService.build(mediaFile.getFilePath(), userGoal);
+                videoContextService.build(storageAccessService.internalGetUrl(mediaId), userGoal);
         AgentState agentState = agentLoopService.run(videoContext);
         return new AiAnalysisResult(
                 videoContext.transcriptText(),
@@ -63,7 +67,9 @@ public class AiService {
 
         try {
             //只做语音转文字
-            String text = aiAnalysisStrategy.transcribe(mediaFile.getFilePath());
+            String text = aiAnalysisStrategy.transcribe(
+                    storageAccessService.internalGetUrl(mediaId).toString()
+            );
             mediaFile.setTranscriptText(text);
 
             //保存数据库

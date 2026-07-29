@@ -10,7 +10,10 @@ import com.example.server.dto.UploadCheckRequest;
 import com.example.server.dto.UploadCheckResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
+import com.example.server.media.api.MediaView;
 import com.example.server.service.MediaService;
+import com.example.server.storage.api.MediaAccessView;
+import com.example.server.storage.service.StorageAccessService;
 import com.example.server.utils.MinioUtils;
 import com.example.server.utils.YtDlpUtils; //确保导入这个
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -52,6 +55,9 @@ public class MediaController {
 
     @Autowired
     private MediaService mediaService;
+
+    @Autowired
+    private StorageAccessService storageAccessService;
 
     @PostMapping("/init-upload")
     /** 创建分片上传任务并返回 uploadId。 */
@@ -203,7 +209,7 @@ public class MediaController {
 
     @GetMapping("/list")
     /** 查询当前用户可见的媒体文件列表。 */
-    public ApiResponse<List<MediaFile>> getList(@AuthenticationPrincipal AuthenticatedUser currentUser) {
+    public ApiResponse<List<MediaView>> getList(@AuthenticationPrincipal AuthenticatedUser currentUser) {
         Long userId = currentUser.userId();
         String cacheKey = "media:list:user:" + userId;
 
@@ -212,7 +218,7 @@ public class MediaController {
             if (json != null) {
                 System.out.println("命中 Redis 缓存，直接返回！");
                 return ApiResponse.success(
-                        objectMapper.readValue(json, new TypeReference<List<MediaFile>>() {})
+                        objectMapper.readValue(json, new TypeReference<List<MediaView>>() {})
                 );
             }
         } catch (Exception e) {
@@ -221,7 +227,10 @@ public class MediaController {
 
         QueryWrapper<MediaFile> query = new QueryWrapper<>();
         query.eq("user_id", userId);
-        List<MediaFile> list = mediaFileMapper.selectList(query.orderByDesc("id"));
+        List<MediaView> list = mediaFileMapper.selectList(query.orderByDesc("id"))
+                .stream()
+                .map(MediaView::from)
+                .toList();
 
         try {
             String jsonToWrite = objectMapper.writeValueAsString(list);
@@ -232,6 +241,16 @@ public class MediaController {
         }
 
         return ApiResponse.success(list);
+    }
+
+    @GetMapping("/{mediaId}/access-url")
+    public ApiResponse<MediaAccessView> accessUrl(
+            @PathVariable Long mediaId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        return ApiResponse.success(
+                storageAccessService.accessUrl(mediaId, currentUser.userId())
+        );
     }
 
     //删除接口

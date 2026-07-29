@@ -5,6 +5,7 @@ import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
 import com.example.server.service.MediaService;
+import com.example.server.storage.service.StorageAccessService;
 import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
@@ -65,6 +66,8 @@ class SecurityIntegrationTest {
 
     @MockBean
     private MediaService mediaService;
+    @MockBean
+    private StorageAccessService storageAccessService;
     @MockBean
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean

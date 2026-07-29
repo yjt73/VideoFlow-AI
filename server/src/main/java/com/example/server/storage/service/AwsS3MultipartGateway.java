@@ -15,6 +15,7 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.UploadPartPresignRequest;
 
 import java.io.InputStream;
@@ -77,6 +78,24 @@ public class AwsS3MultipartGateway implements S3MultipartGateway {
                     .toURI();
         } catch (Exception exception) {
             throw new DependencyUnavailableException("对象存储暂时无法生成分片上传地址", exception);
+        }
+    }
+
+    @Override
+    public URI presignGet(String objectKey, Duration ttl) {
+        try {
+            GetObjectRequest request = GetObjectRequest.builder()
+                    .bucket(properties.bucket())
+                    .key(objectKey)
+                    .build();
+            return presigner.presignGetObject(GetObjectPresignRequest.builder()
+                            .signatureDuration(ttl)
+                            .getObjectRequest(request)
+                            .build())
+                    .url()
+                    .toURI();
+        } catch (Exception exception) {
+            throw new DependencyUnavailableException("对象存储暂时无法生成访问地址", exception);
         }
     }
 

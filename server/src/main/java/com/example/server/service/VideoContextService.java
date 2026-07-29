@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,7 +33,8 @@ public class VideoContextService {
     @Autowired
     private OcrUtils ocrUtils;
 
-    public VideoContext build(String videoPath, String userGoal) {
+    public VideoContext build(URI videoUrl, String userGoal) {
+        String videoPath = videoUrl.toString();
         Path workDir = Path.of(System.getProperty("java.io.tmpdir"), "video-context-" + UUID.randomUUID());
         try {
             Files.createDirectories(workDir);

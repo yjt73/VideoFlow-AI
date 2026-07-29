@@ -18,6 +18,8 @@ public interface S3MultipartGateway {
             Duration ttl
     );
 
+    URI presignGet(String objectKey, Duration ttl);
+
     void complete(String objectKey, String uploadId, List<CompletedPartRequest> parts);
 
     void abort(String objectKey, String uploadId);

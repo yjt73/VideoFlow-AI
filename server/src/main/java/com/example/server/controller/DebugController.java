@@ -9,6 +9,7 @@ import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.AiService;
 import com.example.server.strategy.AiAnalysisStrategy;
+import com.example.server.storage.service.StorageAccessService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.FileSystemResource;
@@ -45,6 +46,8 @@ public class DebugController {
     @Autowired
     private AiService aiService;
 
+    @Autowired
+    private StorageAccessService storageAccessService;
 
     //纯文字提取接口
     @GetMapping("/transcribe")
@@ -72,13 +75,7 @@ public class DebugController {
             throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问他人的媒体");
         }
 
-        String inputPath = mediaFile.getFilePath();
-
-        if (!inputPath.startsWith("http")) {
-            if (!new File(inputPath).exists()) {
-                throw new BusinessException(ErrorCode.NOT_FOUND, "媒体源文件不存在");
-            }
-        }
+        String inputPath = storageAccessService.internalGetUrl(id).toString();
 
         String outputMp3Path = System.getProperty("java.io.tmpdir") + File.separator + "download_" + UUID.randomUUID() + ".mp3";
         System.out.println("⬇ 下载请求，正在从源地址转码音频: " + inputPath);
