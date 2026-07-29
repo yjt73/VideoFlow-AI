@@ -14,6 +14,7 @@ import com.example.server.media.api.MediaView;
 import com.example.server.service.MediaService;
 import com.example.server.storage.api.MediaAccessView;
 import com.example.server.storage.service.StorageAccessService;
+import com.example.server.storage.service.StorageReferenceDeletionService;
 import com.example.server.utils.MinioUtils;
 import com.example.server.utils.YtDlpUtils; //确保导入这个
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -27,7 +28,6 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -58,6 +58,9 @@ public class MediaController {
 
     @Autowired
     private StorageAccessService storageAccessService;
+
+    @Autowired
+    private StorageReferenceDeletionService referenceDeletionService;
 
     @PostMapping("/init-upload")
     /** 创建分片上传任务并返回 uploadId。 */
@@ -259,26 +262,9 @@ public class MediaController {
     public ApiResponse<String> delete(@RequestParam("id") Long id,
                                       @AuthenticationPrincipal AuthenticatedUser currentUser) {
 
-        MediaFile media = mediaFileMapper.selectById(id);
-        if (media == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
-        }
-
-        if (!Objects.equals(media.getUserId(), currentUser.userId())) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "无权删除他人的媒体");
-        }
-
-        if (media.getFilePath() != null && media.getFilePath().startsWith("http")) {
-            minioUtils.removeFile(media.getFilePath());
-        }
-
-        mediaFileMapper.deleteById(id);
-
-        if (media.getUserId() != null) {
-            String cacheKey = "media:list:user:" + media.getUserId();
-            redisTemplate.delete(cacheKey);
-            System.out.println("缓存已清除: " + cacheKey);
-        }
+        referenceDeletionService.deleteOwnedMedia(id, currentUser.userId());
+        String cacheKey = "media:list:user:" + currentUser.userId();
+        redisTemplate.delete(cacheKey);
 
         return ApiResponse.success("删除成功");
     }

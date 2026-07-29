@@ -1,11 +1,11 @@
 package com.example.server.security;
 
 import com.example.server.controller.MediaController;
-import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
 import com.example.server.service.MediaService;
 import com.example.server.storage.service.StorageAccessService;
+import com.example.server.storage.service.StorageReferenceDeletionService;
 import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
@@ -69,6 +69,8 @@ class SecurityIntegrationTest {
     @MockBean
     private StorageAccessService storageAccessService;
     @MockBean
+    private StorageReferenceDeletionService referenceDeletionService;
+    @MockBean
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
     private OutboxEventMapper outboxEventMapper;
@@ -87,10 +89,9 @@ class SecurityIntegrationTest {
 
     @Test
     void userCannotDeleteAnotherUsersMedia() throws Exception {
-        MediaFile media = new MediaFile();
-        media.setId(99L);
-        media.setUserId(2L);
-        when(mediaFileMapper.selectById(99L)).thenReturn(media);
+        doThrow(new AccessDeniedException("无权删除他人的媒体"))
+                .when(referenceDeletionService)
+                .deleteOwnedMedia(99L, 1L);
 
         mockMvc.perform(delete("/media/delete")
                         .param("id", "99")

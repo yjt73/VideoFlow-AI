@@ -13,6 +13,7 @@ import com.example.server.security.SecurityConfig;
 import com.example.server.service.MediaService;
 import com.example.server.storage.api.MediaAccessView;
 import com.example.server.storage.service.StorageAccessService;
+import com.example.server.storage.service.StorageReferenceDeletionService;
 import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
@@ -77,6 +78,8 @@ class MediaUploadControllerTest {
     private MediaService mediaService;
     @MockBean
     private StorageAccessService storageAccessService;
+    @MockBean
+    private StorageReferenceDeletionService referenceDeletionService;
     @MockBean
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
