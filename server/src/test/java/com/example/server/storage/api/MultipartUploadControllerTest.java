@@ -9,6 +9,7 @@ import com.example.server.security.RestAccessDeniedHandler;
 import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
 import com.example.server.storage.service.MultipartUploadService;
+import com.example.server.storage.service.MultipartCompletionService;
 import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
@@ -49,6 +50,8 @@ class MultipartUploadControllerTest {
 
     @MockBean
     private MultipartUploadService service;
+    @MockBean
+    private MultipartCompletionService completionService;
     @MockBean
     private UserMapper userMapper;
     @MockBean
