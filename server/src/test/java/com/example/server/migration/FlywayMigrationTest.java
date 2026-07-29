@@ -59,6 +59,49 @@ class FlywayMigrationTest {
                     "outbox_events",
                     "uk_outbox_aggregate_event"
             )).isTrue();
+            assertThat(tableExists(connection, "storage_objects")).isTrue();
+            assertThat(columnExists(connection, "storage_objects", "content_hash")).isTrue();
+            assertThat(columnExists(connection, "storage_objects", "reference_count")).isTrue();
+            assertThat(columnExists(connection, "storage_objects", "status")).isTrue();
+            assertThat(constraintExists(
+                    connection,
+                    "storage_objects",
+                    "uk_storage_objects_hash"
+            )).isTrue();
+            assertThat(constraintExists(
+                    connection,
+                    "storage_objects",
+                    "uk_storage_objects_location"
+            )).isTrue();
+            assertThat(tableExists(connection, "multipart_upload_sessions")).isTrue();
+            assertThat(columnExists(
+                    connection,
+                    "multipart_upload_sessions",
+                    "provider_upload_id"
+            )).isTrue();
+            assertThat(columnExists(
+                    connection,
+                    "multipart_upload_sessions",
+                    "temporary_object_key"
+            )).isTrue();
+            assertThat(columnExists(connection, "multipart_upload_sessions", "expires_at")).isTrue();
+            assertThat(tableExists(connection, "storage_consistency_findings")).isTrue();
+            assertThat(columnExists(
+                    connection,
+                    "storage_consistency_findings",
+                    "finding_type"
+            )).isTrue();
+            assertThat(columnExists(
+                    connection,
+                    "storage_consistency_findings",
+                    "object_key"
+            )).isTrue();
+            assertThat(columnExists(
+                    connection,
+                    "storage_consistency_findings",
+                    "status"
+            )).isTrue();
+            assertThat(columnExists(connection, "media_files", "object_id")).isTrue();
         }
     }
 
