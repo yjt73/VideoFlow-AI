@@ -55,4 +55,13 @@ public interface MultipartUploadSessionMapper extends BaseMapper<MultipartUpload
               AND status = 'INITIATED'
             """)
     int markAborted(@Param("sessionId") String sessionId);
+
+    @Update("""
+            UPDATE multipart_upload_sessions
+            SET status = 'EXPIRED',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = #{sessionId}
+              AND status = 'INITIATED'
+            """)
+    int markExpired(@Param("sessionId") String sessionId);
 }

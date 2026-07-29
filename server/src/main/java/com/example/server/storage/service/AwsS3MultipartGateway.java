@@ -13,6 +13,9 @@ import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
@@ -133,6 +136,11 @@ public class AwsS3MultipartGateway implements S3MultipartGateway {
                     .key(objectKey)
                     .uploadId(uploadId)
                     .build());
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 404) {
+                return;
+            }
+            throw new DependencyUnavailableException("对象存储暂时无法取消上传", exception);
         } catch (RuntimeException exception) {
             throw new DependencyUnavailableException("对象存储暂时无法取消上传", exception);
         }
@@ -172,6 +180,39 @@ public class AwsS3MultipartGateway implements S3MultipartGateway {
                     .build());
         } catch (RuntimeException exception) {
             throw new DependencyUnavailableException("对象存储暂时无法删除文件", exception);
+        }
+    }
+
+    @Override
+    public boolean exists(String objectKey) {
+        try {
+            s3Client.headObject(HeadObjectRequest.builder()
+                    .bucket(properties.bucket())
+                    .key(objectKey)
+                    .build());
+            return true;
+        } catch (S3Exception exception) {
+            if (exception.statusCode() == 404) {
+                return false;
+            }
+            throw new DependencyUnavailableException("对象存储暂时无法检查文件", exception);
+        }
+    }
+
+    @Override
+    public List<String> listKeys(String prefix) {
+        try {
+            return s3Client.listObjectsV2(ListObjectsV2Request.builder()
+                            .bucket(properties.bucket())
+                            .prefix(prefix)
+                            .maxKeys(1000)
+                            .build())
+                    .contents()
+                    .stream()
+                    .map(object -> object.key())
+                    .toList();
+        } catch (RuntimeException exception) {
+            throw new DependencyUnavailableException("对象存储暂时无法列举文件", exception);
         }
     }
 

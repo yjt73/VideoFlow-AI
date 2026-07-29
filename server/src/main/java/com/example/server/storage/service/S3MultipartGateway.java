@@ -29,4 +29,8 @@ public interface S3MultipartGateway {
     void copy(String sourceKey, String targetKey);
 
     void delete(String objectKey);
+
+    boolean exists(String objectKey);
+
+    List<String> listKeys(String prefix);
 }
