@@ -3,6 +3,7 @@ package com.example.server.qa.api;
 import com.example.server.entity.User;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
+import com.example.server.qa.service.LibraryQaService;
 import com.example.server.qa.service.VideoQaService;
 import com.example.server.security.JwtAuthenticationFilter;
 import com.example.server.security.JwtService;
@@ -49,6 +50,8 @@ class VideoQaControllerTest {
 
     @MockBean
     private VideoQaService videoQaService;
+    @MockBean
+    private LibraryQaService libraryQaService;
     @MockBean
     private UserMapper userMapper;
     @MockBean
