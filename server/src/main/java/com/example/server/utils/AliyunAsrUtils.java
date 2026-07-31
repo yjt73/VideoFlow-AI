@@ -2,103 +2,88 @@ package com.example.server.utils;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
-import okhttp3.*;
+import com.example.server.ai.retry.ThirdPartyApiException;
+import com.example.server.ai.retry.ThirdPartyRetryConfig;
+import com.example.server.ai.retry.ThirdPartyRetryExecutor;
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 
-/** 封装阿里云语音识别调用及失败重试。 */
 @Component
 public class AliyunAsrUtils {
 
     @Value("${ai.deepseek.api-key}")
     private String apiKey;
 
-    private final OkHttpClient client = new OkHttpClient.Builder()
-            .connectTimeout(120, TimeUnit.SECONDS)
-            .readTimeout(600, TimeUnit.SECONDS)
-            .writeTimeout(600, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build();
+    private final ThirdPartyRetryExecutor retryExecutor;
+    private final OkHttpClient client;
 
-    /** 上传音频并获取识别文本；瞬时失败时按策略重试。 */
+    public AliyunAsrUtils(ThirdPartyRetryExecutor retryExecutor) {
+        this.retryExecutor = retryExecutor;
+        this.client = new OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(600, TimeUnit.SECONDS)
+                .writeTimeout(600, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false)
+                .build();
+    }
+
     public String audioToText(String filePath) {
         File file = new File(filePath);
-        if (!file.exists()) return "❌ 错误：找不到文件";
-
-        String url = "https://api.siliconflow.cn/v1/audio/transcriptions";
-        int maxRetries = 3; // 最大重试次数
-        String lastError = "";
-
-        for (int i = 0; i < maxRetries; i++) {
-            try {
-                System.out.println("🎤 [ASR] 上传中 (第 " + (i + 1) + " 次尝试)...");
-
-                RequestBody requestBody = new MultipartBody.Builder()
-                        .setType(MultipartBody.FORM)
-                        .addFormDataPart("file", file.getName(),
-                                RequestBody.create(file, MediaType.parse("application/octet-stream")))
-                        // 【核心修改】换成电信的大模型，更稳，准确率更高
-                        .addFormDataPart("model", "TeleAI/TeleSpeechASR")
-                        .build();
-
-                Request request = new Request.Builder()
-                        .url(url)
-                        .addHeader("Authorization", "Bearer " + apiKey)
-                        .post(requestBody)
-                        .build();
-
-                try (Response response = client.newCall(request).execute()) {
-                    if (response.isSuccessful()) {
-                        String resultJson = response.body().string();
-                        JSONObject jsonObject = JSON.parseObject(resultJson);
-                        if (jsonObject.containsKey("text")) {
-                            return jsonObject.getString("text");
-                        }
-                    } else {
-                        // 如果是 500 错误，记录并重试
-                        String errBody = response.body() != null ? response.body().string() : "";
-                        lastError = "HTTP " + response.code() + ": " + errBody;
-                        System.err.println("⚠️ ASR 失败 (" + (i + 1) + "/" + maxRetries + "): " + lastError);
-
-                        if (response.code() >= 500) {
-                            if (i < maxRetries - 1 && !waitBeforeRetry(i)) {
-                                return "❌ 识别任务已中断";
-                            }
-                            continue;
-                        } else {
-                            // 如果是 400/401 等客户端错误，直接退出不重试
-                            return "❌ 识别失败: " + lastError;
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                lastError = e.getMessage();
-                System.err.println("⚠️ 网络异常 (" + (i + 1) + "/" + maxRetries + "): " + lastError);
-                if (i < maxRetries - 1 && !waitBeforeRetry(i)) {
-                    return "❌ 识别任务已中断";
-                }
-            }
+        if (!file.exists()) {
+            return "错误：找不到音频文件";
         }
-
-        return "❌ 最终失败 (重试3次): " + lastError;
-    }
-
-    /** 按尝试次数执行退避等待，被中断时停止重试。 */
-    private boolean waitBeforeRetry(int attempt) {
         try {
-            Thread.sleep(retryDelayMillis(attempt));
-            return true;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
+            return retryExecutor.execute("ASR", null, () -> callAsr(file));
+        } catch (Exception exception) {
+            return "识别最终失败: " + exception.getMessage();
         }
     }
 
-    static long retryDelayMillis(int attempt) {
-        return 2000L * (1L << attempt);
+    private String callAsr(File file) throws Exception {
+        RequestBody requestBody = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(
+                        "file",
+                        file.getName(),
+                        RequestBody.create(
+                                file,
+                                MediaType.parse("application/octet-stream")
+                        )
+                )
+                .addFormDataPart("model", "TeleAI/TeleSpeechASR")
+                .build();
+
+        Request request = new Request.Builder()
+                .url("https://api.siliconflow.cn/v1/audio/transcriptions")
+                .addHeader("Authorization", "Bearer " + apiKey)
+                .post(requestBody)
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) {
+                String body = response.body() == null ? "" : response.body().string();
+                throw new ThirdPartyApiException(
+                        "ASR",
+                        response.code(),
+                        "HTTP " + response.code() + ": " + body,
+                        ThirdPartyRetryConfig.retryAfterSeconds(response.header("Retry-After"))
+                );
+            }
+            JSONObject jsonObject = JSON.parseObject(response.body().string());
+            String text = jsonObject.getString("text");
+            if (text == null || text.isBlank()) {
+                throw new IllegalStateException("ASR response missing text");
+            }
+            return text;
+        }
     }
 }

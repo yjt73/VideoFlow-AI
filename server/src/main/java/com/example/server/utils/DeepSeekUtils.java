@@ -4,6 +4,9 @@ import com.example.server.dto.AgentState;
 import com.example.server.dto.AnalysisResult;
 import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
+import com.example.server.ai.model.StructuredModelOutputParser;
+import com.example.server.ai.artifact.ModelRawResponseService;
+import com.example.server.ai.retry.ThirdPartyRetryExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
@@ -37,18 +40,29 @@ public class DeepSeekUtils {
 
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
+    private final StructuredModelOutputParser outputParser;
+    private final ThirdPartyRetryExecutor retryExecutor;
+    private final ModelRawResponseService rawResponseService;
+    private final String modelName;
 
     /** 创建带超时和鉴权配置的大模型客户端。 */
     public DeepSeekUtils(@Value("${ai.deepseek.api-key}") String apiKey,
                          @Value("${ai.deepseek.base-url}") String baseUrl,
                          @Value("${ai.deepseek.model:deepseek-ai/DeepSeek-R1-Distill-Qwen-32B}") String modelName,
-                         ObjectMapper objectMapper) {
+                         ObjectMapper objectMapper,
+                         StructuredModelOutputParser outputParser,
+                         ThirdPartyRetryExecutor retryExecutor,
+                         ModelRawResponseService rawResponseService) {
         this.chatModel = OpenAiChatModel.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .modelName(modelName)
                 .build();
         this.objectMapper = objectMapper;
+        this.outputParser = outputParser;
+        this.retryExecutor = retryExecutor;
+        this.rawResponseService = rawResponseService;
+        this.modelName = modelName;
     }
 
     /** 对普通文本执行一次兼容旧流程的内容分析。 */
@@ -56,7 +70,7 @@ public class DeepSeekUtils {
         if (content == null || content.isBlank()) {
             return "无法提取有效信息";
         }
-        return chatModel.chat(SYSTEM_PROMPT + "\n\n待分析文本：\n" + content);
+        return chat("LLM_ANALYZE", SYSTEM_PROMPT + "\n\n待分析文本：\n" + content);
     }
 
     /** 根据视频上下文生成后续分析计划。 */
@@ -72,7 +86,7 @@ public class DeepSeekUtils {
                     }
                     VideoContext:
                     """ + objectMapper.writeValueAsString(context);
-            return parseJson(chatModel.chat(prompt), AgentState.AgentPlan.class);
+            return parseJson(chat("LLM_PLAN", prompt), AgentState.AgentPlan.class);
         } catch (Exception e) {
             throw new IllegalStateException("Agent 任务规划失败", e);
         }
@@ -90,7 +104,7 @@ public class DeepSeekUtils {
                     }
                     原始片段：
                     """ + objectMapper.writeValueAsString(segments);
-            return parseJson(chatModel.chat(prompt), VideoChunk.ChunkSummary.class);
+            return parseJson(chat("LLM_CHUNK_SUMMARY", prompt), VideoChunk.ChunkSummary.class);
         } catch (Exception e) {
             throw new IllegalStateException("视频片段摘要失败", e);
         }
@@ -125,7 +139,7 @@ public class DeepSeekUtils {
 
                     VideoContext:
                     """ + objectMapper.writeValueAsString(context);
-            return parseJson(chatModel.chat(prompt), AnalysisResult.class);
+            return parseJson(chat("LLM_EXECUTE", prompt), AnalysisResult.class);
         } catch (Exception e) {
             throw new IllegalStateException("Agent 执行失败", e);
         }
@@ -163,7 +177,7 @@ public class DeepSeekUtils {
 
                     VideoContext:
                     """ + objectMapper.writeValueAsString(context);
-            return parseJson(chatModel.chat(prompt), AgentState.CriticResult.class);
+            return parseJson(chat("LLM_CRITIQUE", prompt), AgentState.CriticResult.class);
         } catch (Exception e) {
             throw new IllegalStateException("Critic 校验失败", e);
         }
@@ -171,10 +185,22 @@ public class DeepSeekUtils {
 
     /** 清理模型响应中的 Markdown 包装并反序列化为目标类型。 */
     private <T> T parseJson(String response, Class<T> type) throws Exception {
-        String json = response
-                .replace("```json", "")
-                .replace("```", "")
-                .trim();
-        return objectMapper.readValue(json, type);
+        return outputParser.parse(response, type);
+    }
+
+    private String chat(String apiName, String prompt) {
+        String response = retryExecutor.execute(apiName, null, () -> chatModel.chat(prompt));
+        rawResponseService.save(
+                null,
+                null,
+                apiName,
+                apiName,
+                modelName,
+                prompt,
+                response,
+                "RAW",
+                null
+        );
+        return response;
     }
 }
