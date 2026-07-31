@@ -114,6 +114,13 @@ class FlywayMigrationTest {
                     "video_qa_messages",
                     "idx_video_qa_messages_conversation_created"
             )).isTrue();
+            assertThat(tableExists(connection, "rag_segments")).isTrue();
+            assertThat(columnExists(connection, "rag_segments", "embedding_json")).isTrue();
+            assertThat(constraintExists(
+                    connection,
+                    "rag_segments",
+                    "uk_rag_segments_media_source_index"
+            )).isTrue();
         }
     }
 

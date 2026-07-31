@@ -1,0 +1,20 @@
+CREATE TABLE rag_segments (
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    media_id BIGINT NOT NULL,
+    segment_index INT NOT NULL,
+    start_ms BIGINT NULL,
+    end_ms BIGINT NULL,
+    source VARCHAR(32) NOT NULL,
+    content TEXT NOT NULL,
+    token_text TEXT NOT NULL,
+    embedding_json TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    CONSTRAINT fk_rag_segments_media FOREIGN KEY (media_id) REFERENCES media_files(id),
+    CONSTRAINT fk_rag_segments_user FOREIGN KEY (user_id) REFERENCES users(id),
+    CONSTRAINT uk_rag_segments_media_source_index UNIQUE (media_id, source, segment_index),
+    INDEX idx_rag_segments_user_media (user_id, media_id),
+    INDEX idx_rag_segments_media_source (media_id, source)
+);
