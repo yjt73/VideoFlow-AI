@@ -4,6 +4,7 @@ import com.example.server.api.BusinessException;
 import com.example.server.api.ErrorCode;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
+import com.example.server.qa.persistence.VideoQaHistoryRepository;
 import com.example.server.qa.api.VideoQaCitationView;
 import com.example.server.qa.api.VideoQaRequest;
 import com.example.server.qa.api.VideoQaResponse;
@@ -23,15 +24,21 @@ public class VideoQaService {
     private final VideoQaToolService toolService;
     private final DeepSeekUtils deepSeekUtils;
     private final ObjectMapper objectMapper;
+    private final VideoQaMemoryService memoryService;
+    private final VideoQaHistoryRepository historyRepository;
 
     public VideoQaService(MediaFileMapper mediaFileMapper,
                           VideoQaToolService toolService,
                           DeepSeekUtils deepSeekUtils,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          VideoQaMemoryService memoryService,
+                          VideoQaHistoryRepository historyRepository) {
         this.mediaFileMapper = mediaFileMapper;
         this.toolService = toolService;
         this.deepSeekUtils = deepSeekUtils;
         this.objectMapper = objectMapper;
+        this.memoryService = memoryService;
+        this.historyRepository = historyRepository;
     }
 
     public VideoQaResponse answer(Long mediaId, Long userId, VideoQaRequest request) {
@@ -46,6 +53,13 @@ public class VideoQaService {
         String conversationId = request.conversationId() == null || request.conversationId().isBlank()
                 ? UUID.randomUUID().toString()
                 : request.conversationId();
+        historyRepository.createConversation(
+                conversationId,
+                userId,
+                mediaId,
+                request.question().length() > 50 ? request.question().substring(0, 50) : request.question()
+        );
+        List<VideoQaMemoryMessage> history = memoryService.loadRecent(userId, mediaId, conversationId);
         List<VideoQaToolResult> toolResults = List.of(
                 toolService.querySubtitleByKeyword(mediaFile, request.question()),
                 toolService.loadVideoSegments(mediaFile),
@@ -55,12 +69,15 @@ public class VideoQaService {
                 .flatMap(result -> result.citations().stream())
                 .limit(5)
                 .toList();
-        String answer = deepSeekUtils.answerQuestion(request.question(), toJson(toolResults), "[]");
+        String answer = deepSeekUtils.answerQuestion(request.question(), toJson(toolResults), toJson(history));
         if (answer == null || answer.isBlank()) {
             answer = citations.isEmpty()
                     ? "当前视频中没有检索到足够相关的信息。"
                     : citations.get(0).content();
         }
+        historyRepository.saveMessage(conversationId, userId, mediaId, "USER", request.question(), List.of(), List.of());
+        historyRepository.saveMessage(conversationId, userId, mediaId, "ASSISTANT", answer, citations, toolResults);
+        memoryService.appendPair(userId, mediaId, conversationId, request.question(), answer);
         return new VideoQaResponse(
                 conversationId,
                 answer,

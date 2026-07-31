@@ -102,6 +102,18 @@ class FlywayMigrationTest {
                     "status"
             )).isTrue();
             assertThat(columnExists(connection, "media_files", "object_id")).isTrue();
+            assertThat(tableExists(connection, "video_qa_conversations")).isTrue();
+            assertThat(tableExists(connection, "video_qa_messages")).isTrue();
+            assertThat(constraintExists(
+                    connection,
+                    "video_qa_conversations",
+                    "uk_video_qa_conversation_id"
+            )).isTrue();
+            assertThat(indexExists(
+                    connection,
+                    "video_qa_messages",
+                    "idx_video_qa_messages_conversation_created"
+            )).isTrue();
         }
     }
 
