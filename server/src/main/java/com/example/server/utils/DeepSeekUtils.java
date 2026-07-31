@@ -184,6 +184,23 @@ public class DeepSeekUtils {
     }
 
     /** 清理模型响应中的 Markdown 包装并反序列化为目标类型。 */
+    public String answerQuestion(String question, String contextJson, String historyJson) {
+        String prompt = """
+                你是视频问答助手。只能依据工具返回的视频片段、摘要、任务状态和最近会话回答。
+                如果证据不足，明确说明当前视频中没有足够依据。
+                回答要简洁，并尽量引用时间戳证据。
+
+                用户问题：
+                """ + question + """
+
+                最近会话：
+                """ + historyJson + """
+
+                工具结果：
+                """ + contextJson;
+        return chat("LLM_VIDEO_QA", prompt);
+    }
+
     private <T> T parseJson(String response, Class<T> type) throws Exception {
         return outputParser.parse(response, type);
     }
