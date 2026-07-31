@@ -2,6 +2,10 @@ package com.example.server.service;
 
 import com.example.server.dto.AgentState;
 import com.example.server.dto.VideoContext;
+import com.example.server.ai.artifact.AnalysisArtifactService;
+import com.example.server.ai.artifact.AnalysisCheckpointService;
+import com.example.server.ai.artifact.CheckpointKey;
+import com.example.server.ai.artifact.Hashing;
 import com.example.server.api.BusinessException;
 import com.example.server.api.ErrorCode;
 import com.example.server.entity.MediaFile;
@@ -9,6 +13,7 @@ import com.example.server.mapper.MediaFileMapper;
 import com.example.server.strategy.AiAnalysisStrategy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -38,6 +43,15 @@ public class AiService {
     @Autowired
     private StorageAccessService storageAccessService;
 
+    @Autowired
+    private AnalysisArtifactService artifactService;
+
+    @Autowired
+    private AnalysisCheckpointService checkpointService;
+
+    @Value("${ai.pipeline.model-version:v5-default}")
+    private String pipelineModelVersion;
+
     public AiAnalysisResult analyze(Long mediaId, String userGoal) {
         System.out.println(" [线程池] 开始处理任务，ID: " + mediaId);
 
@@ -46,12 +60,63 @@ public class AiService {
             throw new BusinessException(ErrorCode.NOT_FOUND, "媒体不存在");
         }
 
-        VideoContext videoContext =
-                videoContextService.build(storageAccessService.internalGetUrl(mediaId), userGoal);
+        String goalHash = Hashing.sha256(userGoal);
+        String inputHash = mediaFile.getContentHash() == null
+                ? String.valueOf(mediaId)
+                : mediaFile.getContentHash();
+        CheckpointKey contextKey = new CheckpointKey(
+                null,
+                mediaId,
+                "VIDEO_ANALYSIS",
+                "CONTEXT_BUILT",
+                goalHash,
+                inputHash,
+                pipelineModelVersion
+        );
+        VideoContext videoContext = checkpointService.findCompletedArtifact(contextKey)
+                .map(artifactId -> artifactService.read(artifactId, VideoContext.class))
+                .orElseGet(() -> {
+                    VideoContext built = videoContextService.build(
+                            storageAccessService.internalGetUrl(mediaId),
+                            userGoal
+                    );
+                    long artifactId = artifactService.save(
+                            mediaId,
+                            "VIDEO_CONTEXT",
+                            "CONTEXT_BUILT",
+                            built
+                    );
+                    checkpointService.markCompleted(
+                            contextKey,
+                            artifactId,
+                            Hashing.sha256(built.toString())
+                    );
+                    return built;
+                });
         AgentState agentState = agentLoopService.run(videoContext);
+        String markdown = agentState.result().toMarkdown();
+        long resultArtifactId = artifactService.save(
+                mediaId,
+                "ANALYSIS_RESULT",
+                "ANALYSIS_COMPLETED",
+                agentState.result()
+        );
+        checkpointService.markCompleted(
+                new CheckpointKey(
+                        null,
+                        mediaId,
+                        "VIDEO_ANALYSIS",
+                        "ANALYSIS_COMPLETED",
+                        goalHash,
+                        inputHash,
+                        pipelineModelVersion
+                ),
+                resultArtifactId,
+                Hashing.sha256(markdown)
+        );
         return new AiAnalysisResult(
                 videoContext.transcriptText(),
-                agentState.result().toMarkdown()
+                markdown
         );
     }
 
