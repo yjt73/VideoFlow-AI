@@ -5,10 +5,12 @@ import com.example.server.entity.MediaFile;
 import com.example.server.storage.domain.StorageObject;
 import com.example.server.storage.persistence.StorageObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -22,7 +24,6 @@ import static org.mockito.Mockito.when;
 
 class ServerSideObjectIngestionServiceTest {
 
-    @TempDir
     Path tempDir;
 
     private final StorageObjectMapper storageObjectMapper = mock(StorageObjectMapper.class);
@@ -36,6 +37,28 @@ class ServerSideObjectIngestionServiceTest {
                     gateway,
                     "media"
             );
+
+    @BeforeEach
+    void setUpTempDir() throws Exception {
+        Files.createDirectories(Path.of("target", "test-temp"));
+        tempDir = Files.createTempDirectory(Path.of("target", "test-temp"), "ingestion-");
+    }
+
+    @AfterEach
+    void cleanUpTempDir() throws Exception {
+        if (tempDir == null || !Files.exists(tempDir)) {
+            return;
+        }
+        try (var paths = Files.walk(tempDir)) {
+            paths.sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(file -> {
+                        if (!file.delete()) {
+                            file.deleteOnExit();
+                        }
+                    });
+        }
+    }
 
     @Test
     void uploadsFileToCanonicalHashKeyAndCreatesReference() throws Exception {

@@ -2,6 +2,7 @@ package com.example.server.service;
 
 import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
+import com.example.server.ai.artifact.EmbeddingCacheService;
 import com.example.server.utils.DeepSeekUtils;
 import com.example.server.utils.EmbeddingUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +24,9 @@ public class LongVideoContextService {
     @Autowired
     private EmbeddingUtils embeddingUtils;
 
+    @Autowired
+    private EmbeddingCacheService embeddingCacheService;
+
     public VideoContext selectRelevant(VideoContext context) {
         if (context.segments().isEmpty()
                 || context.segments().get(context.segments().size() - 1).endMs() <= CHUNK_MS) {
@@ -30,7 +34,7 @@ public class LongVideoContextService {
         }
 
         List<VideoChunk> chunks = buildChunks(context.segments());
-        List<Double> queryEmbedding = embeddingUtils.embed(context.userGoal());
+        List<Double> queryEmbedding = embedCached(context.userGoal());
 
         List<VideoContext.VideoSegment> selectedSegments = chunks.stream()
                 .sorted(Comparator.comparingDouble(
@@ -62,10 +66,20 @@ public class LongVideoContextService {
                     summary.segmentSummary(),
                     summary.keywords(),
                     rawSegments,
-                    embeddingUtils.embed(embeddingText)
+                    embedCached(embeddingText)
             ));
         }
         return chunks;
+    }
+
+    private List<Double> embedCached(String text) {
+        String modelVersion = embeddingUtils.model();
+        return embeddingCacheService.find(text, modelVersion)
+                .orElseGet(() -> {
+                    List<Double> embedding = embeddingUtils.embed(text);
+                    embeddingCacheService.save(text, modelVersion, embedding);
+                    return embedding;
+                });
     }
 
     private double cosine(List<Double> left, List<Double> right) {

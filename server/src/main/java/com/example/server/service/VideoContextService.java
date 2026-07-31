@@ -4,6 +4,7 @@ import com.example.server.dto.VideoContext;
 import com.example.server.utils.AliyunAsrUtils;
 import com.example.server.utils.OcrUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -15,8 +16,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,13 +38,27 @@ public class VideoContextService {
     @Autowired
     private OcrUtils ocrUtils;
 
+    @Autowired
+    @Qualifier("aiPipelineExecutor")
+    private Executor aiPipelineExecutor;
+
     public VideoContext build(URI videoUrl, String userGoal) {
         String videoPath = videoUrl.toString();
         Path workDir = Path.of(System.getProperty("java.io.tmpdir"), "video-context-" + UUID.randomUUID());
         try {
             Files.createDirectories(workDir);
-            List<TranscriptPart> transcripts = transcribeBySegments(videoPath, workDir.resolve("audio"));
-            List<FramePart> frames = extractKeyFrames(videoPath, workDir.resolve("frames"));
+            CompletableFuture<List<TranscriptPart>> transcriptFuture =
+                    CompletableFuture.supplyAsync(
+                            () -> runStage(() -> transcribeBySegments(videoPath, workDir.resolve("audio"))),
+                            aiPipelineExecutor
+                    );
+            CompletableFuture<List<FramePart>> frameFuture =
+                    CompletableFuture.supplyAsync(
+                            () -> runStage(() -> extractKeyFrames(videoPath, workDir.resolve("frames"))),
+                            aiPipelineExecutor
+                    ).exceptionally(error -> Collections.emptyList());
+            List<TranscriptPart> transcripts = transcriptFuture.join();
+            List<FramePart> frames = frameFuture.join();
             return new VideoContext(videoPath, userGoal, merge(transcripts, frames));
         } catch (Exception e) {
             throw new IllegalStateException("VideoContext 构建失败", e);
@@ -71,6 +90,14 @@ public class VideoContextService {
             }
         }
         return result;
+    }
+
+    private <T> T runStage(CheckedSupplier<T> supplier) {
+        try {
+            return supplier.get();
+        } catch (Exception exception) {
+            throw new CompletionException(exception);
+        }
     }
 
     private List<FramePart> extractKeyFrames(String videoPath, Path frameDir) throws Exception {
@@ -153,5 +180,10 @@ public class VideoContextService {
     }
 
     private record FramePart(long timestampMs, String ocrText, String frameName) {
+    }
+
+    @FunctionalInterface
+    private interface CheckedSupplier<T> {
+        T get() throws Exception;
     }
 }
