@@ -1,6 +1,8 @@
 package com.example.server.rag.service;
 
 import com.example.server.ai.artifact.EmbeddingCacheService;
+import com.example.server.observability.OperationMetricsService;
+import com.example.server.observability.OperationalAlertService;
 import com.example.server.rag.persistence.RagSegment;
 import com.example.server.rag.persistence.RagSegmentRepository;
 import com.example.server.utils.EmbeddingUtils;
@@ -9,6 +11,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -30,22 +34,46 @@ public class RagSearchService {
     private final EmbeddingUtils embeddingUtils;
     private final EmbeddingCacheService embeddingCacheService;
     private final ObjectMapper objectMapper;
+    private final OperationMetricsService metricsService;
+    private final OperationalAlertService alertService;
 
     public RagSearchService(RagSegmentRepository ragSegmentRepository,
                             RagKeywordScorer keywordScorer,
                             RagVectorScorer vectorScorer,
                             EmbeddingUtils embeddingUtils,
                             EmbeddingCacheService embeddingCacheService,
-                            ObjectMapper objectMapper) {
+                            ObjectMapper objectMapper,
+                            OperationMetricsService metricsService,
+                            OperationalAlertService alertService) {
         this.ragSegmentRepository = ragSegmentRepository;
         this.keywordScorer = keywordScorer;
         this.vectorScorer = vectorScorer;
         this.embeddingUtils = embeddingUtils;
         this.embeddingCacheService = embeddingCacheService;
         this.objectMapper = objectMapper;
+        this.metricsService = metricsService;
+        this.alertService = alertService;
     }
 
     public List<RagSearchResult> search(Long userId, Collection<Long> mediaIds, String question, int limit) {
+        Instant startedAt = Instant.now();
+        try {
+            List<RagSearchResult> results = doSearch(userId, mediaIds, question, limit);
+            metricsService.increment("rag.search", "success");
+            metricsService.recordDuration("rag.search", "success", Duration.between(startedAt, Instant.now()));
+            if (results.isEmpty()) {
+                alertService.warn("rag.search.empty", userId, null, "RAG 检索没有命中片段");
+            }
+            return results;
+        } catch (RuntimeException exception) {
+            metricsService.increment("rag.search", "failure");
+            metricsService.recordDuration("rag.search", "failure", Duration.between(startedAt, Instant.now()));
+            alertService.warn("rag.search.failure", userId, null, exception.getMessage());
+            throw exception;
+        }
+    }
+
+    private List<RagSearchResult> doSearch(Long userId, Collection<Long> mediaIds, String question, int limit) {
         List<RagSegment> segments = ragSegmentRepository.selectByUserAndMediaIds(userId, mediaIds);
         if (segments.isEmpty() || question == null || question.isBlank() || limit <= 0) {
             return List.of();
@@ -81,6 +109,7 @@ public class RagSearchService {
             embeddingCacheService.save(question, model, embedding);
             return Optional.of(embedding);
         } catch (RuntimeException exception) {
+            alertService.warn("rag.embedding.fallback", "Embedding 不可用，已降级为关键词检索");
             return Optional.empty();
         }
     }
