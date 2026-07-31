@@ -64,3 +64,10 @@ export const apiFetch = async (path, options = {}) => {
     externalSignal?.removeEventListener('abort', forwardAbort)
   }
 }
+
+export const askVideoQuestion = (mediaId, payload) => apiFetch(`/media/${mediaId}/qa`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(payload),
+  timeoutMs: 60000
+})

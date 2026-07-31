@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiFetch } from './api'
+import { apiFetch, askVideoQuestion } from './api'
 
 const jsonResponse = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -80,5 +80,34 @@ describe('apiFetch 请求控制', () => {
       status: 404,
       errorCode: 'UPLOAD_SESSION_EXPIRED'
     })
+  })
+
+  it('提交视频问答请求', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({
+      code: 200,
+      data: {
+        conversationId: 'conversation-1',
+        answer: '第三章主要讲评分规则。',
+        citations: [{ timestampMs: 120000, source: 'ASR', content: '评分规则' }]
+      }
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await askVideoQuestion(9, {
+      conversationId: 'conversation-1',
+      question: '第三章讲了什么？'
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:9090/media/9/qa',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          conversationId: 'conversation-1',
+          question: '第三章讲了什么？'
+        })
+      })
+    )
+    expect(result.answer).toContain('评分规则')
   })
 })

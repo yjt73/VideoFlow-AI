@@ -186,6 +186,15 @@
                 </div>
                 <div class="shimmer"></div>
               </button>
+
+              <button
+                  class="dock-item"
+                  :disabled="item.status !== 'COMPLETED'"
+                  @click="openVideoQa(item)"
+              >
+                <span class="item-icon">?</span>
+                <span class="item-label">视频问答</span>
+              </button>
             </div>
           </div>
         </div>
@@ -207,6 +216,30 @@
         </div>
         <div class="sidebar-body">
           <div v-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
+          <div v-else-if="sidebar.type === 'qa'" class="qa-panel">
+            <div class="qa-messages">
+              <div v-for="(entry, index) in qa.messages" :key="index" class="qa-message" :class="entry.role">
+                <div class="qa-role">{{ entry.role === 'user' ? '我' : 'AI' }}</div>
+                <div class="qa-content">{{ entry.content }}</div>
+                <div v-if="entry.citations?.length" class="qa-citations">
+                  <div v-for="citation in entry.citations" :key="`${citation.timestampMs}-${citation.content}`" class="qa-citation">
+                    {{ formatTimestamp(citation.timestampMs) }} · {{ citation.source }} · {{ citation.content }}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="qa-input">
+              <input
+                  v-model="qa.question"
+                  type="text"
+                  placeholder="围绕这个视频提问..."
+                  @keyup.enter="submitVideoQuestion"
+              />
+              <button @click="submitVideoQuestion" :disabled="qa.loading || !qa.question.trim()">
+                {{ qa.loading ? '思考中' : '发送' }}
+              </button>
+            </div>
+          </div>
           <div v-else>
             <div v-if="sidebar.type === 'ai'" class="markdown-content" v-html="renderedMarkdown"></div>
             <div v-else class="text-content"><pre>{{ sidebar.content }}</pre></div>
@@ -254,7 +287,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { marked } from 'marked'
-import { apiFetch, clearToken, getToken, setToken } from './api'
+import { apiFetch, askVideoQuestion, clearToken, getToken, setToken } from './api'
 import { calculateFileMd5 } from './upload/md5'
 import { MultipartTransport } from './upload/multipartTransport'
 import { UploadManager, UPLOAD_STATES } from './upload/uploadManager'
@@ -268,6 +301,13 @@ const uploading = ref(false)
 const list = ref([])
 const isDragOver = ref(false)
 const sidebar = ref({ visible: false, type: 'ai', title: '', content: '', loading: false })
+const qa = ref({
+  mediaId: null,
+  conversationId: null,
+  question: '',
+  messages: [],
+  loading: false
+})
 const currentUser = ref(null)
 const showAuthModal = ref(false)
 const authMode = ref('login')
@@ -735,6 +775,54 @@ const openSidebar = (type, title) => {
   sidebar.value.content = ''
 }
 // 关闭分析结果侧栏。
+const openVideoQa = (item) => {
+  openSidebar('qa', `视频问答：${item.filename}`)
+  sidebar.value.loading = false
+  qa.value = {
+    mediaId: item.id,
+    conversationId: qa.value.mediaId === item.id ? qa.value.conversationId : null,
+    question: '',
+    messages: qa.value.mediaId === item.id ? qa.value.messages : [],
+    loading: false
+  }
+}
+
+const submitVideoQuestion = async () => {
+  const question = qa.value.question.trim()
+  if (!question || !qa.value.mediaId || qa.value.loading) return
+  qa.value.messages.push({ role: 'user', content: question })
+  qa.value.question = ''
+  qa.value.loading = true
+  try {
+    const response = await askVideoQuestion(qa.value.mediaId, {
+      conversationId: qa.value.conversationId,
+      question
+    })
+    qa.value.conversationId = response.conversationId
+    qa.value.messages.push({
+      role: 'assistant',
+      content: response.answer,
+      citations: response.citations || []
+    })
+  } catch (error) {
+    qa.value.messages.push({
+      role: 'assistant',
+      content: '问答失败：' + (error.message || '服务暂时不可用'),
+      citations: []
+    })
+  } finally {
+    qa.value.loading = false
+  }
+}
+
+const formatTimestamp = (timestampMs) => {
+  if (timestampMs === null || timestampMs === undefined) return '--:--'
+  const totalSeconds = Math.floor(timestampMs / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 const closeSidebar = () => { sidebar.value.visible = false }
 
 // 打开登录或注册弹窗。
@@ -1014,6 +1102,19 @@ html, body, #app {
 .markdown-content li { margin-bottom: 8px; color: #d4d4d8; }
 .markdown-content strong { color: var(--accent-lime); font-weight: 700; }
 .markdown-content p { margin-bottom: 1em; }
+.qa-panel { display: flex; flex-direction: column; height: 100%; gap: 16px; }
+.qa-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.qa-message { border: 1px solid var(--border-tech); border-radius: 8px; padding: 12px; background: rgba(0,0,0,0.25); }
+.qa-message.user { border-color: var(--accent-purple); }
+.qa-role { color: var(--accent-lime); font-weight: 700; margin-bottom: 6px; }
+.qa-content { white-space: pre-wrap; line-height: 1.7; }
+.qa-citations { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; color: var(--text-sub); font-size: 0.82rem; }
+.qa-citation { border-left: 2px solid var(--accent-lime); padding-left: 8px; }
+.qa-input { display: flex; gap: 10px; border-top: 1px solid var(--border-tech); padding-top: 12px; }
+.qa-input input { flex: 1; background: #000; border: 1px solid var(--border-tech); color: var(--text-main); padding: 10px; outline: none; }
+.qa-input input:focus { border-color: var(--accent-lime); }
+.qa-input button { border: 1px solid var(--accent-lime); background: transparent; color: var(--accent-lime); padding: 0 16px; cursor: pointer; }
+.qa-input button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* 登录框 */
 .auth-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); z-index: 2000; display: flex; justify-content: center; align-items: center; }
