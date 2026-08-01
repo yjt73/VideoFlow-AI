@@ -64,6 +64,30 @@ class BucketSecurityInitializerTest {
         verify(s3Client).putBucketLifecycleConfiguration(any(PutBucketLifecycleConfigurationRequest.class));
     }
 
+    @Test
+    void ignoresUnsupportedCorsConfiguration() {
+        S3Client s3Client = mock(S3Client.class);
+        doThrow(S3Exception.builder().statusCode(501).message("unsupported cors").build())
+                .when(s3Client).putBucketCors(any(PutBucketCorsRequest.class));
+        BucketSecurityInitializer initializer = new BucketSecurityInitializer(s3Client, properties());
+
+        initializer.initialize();
+
+        verify(s3Client).putBucketLifecycleConfiguration(any(PutBucketLifecycleConfigurationRequest.class));
+    }
+
+    @Test
+    void ignoresUnsupportedLifecycleConfiguration() {
+        S3Client s3Client = mock(S3Client.class);
+        doThrow(S3Exception.builder().statusCode(400).message("invalid lifecycle").build())
+                .when(s3Client).putBucketLifecycleConfiguration(any(PutBucketLifecycleConfigurationRequest.class));
+        BucketSecurityInitializer initializer = new BucketSecurityInitializer(s3Client, properties());
+
+        initializer.initialize();
+
+        verify(s3Client).putBucketCors(any(PutBucketCorsRequest.class));
+    }
+
     private S3StorageProperties properties() {
         return new S3StorageProperties(
                 "http://localhost:9000",

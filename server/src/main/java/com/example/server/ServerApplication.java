@@ -1,6 +1,5 @@
 package com.example.server;
 
-import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -8,10 +7,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 /** 应用启动入口，负责加载 Spring 组件和 MyBatis Mapper。 */
 @SpringBootApplication
-@MapperScan({
-		"com.example.server.mapper",
-		"com.example.server.task.persistence"
-})
 @EnableScheduling
 public class ServerApplication {
 

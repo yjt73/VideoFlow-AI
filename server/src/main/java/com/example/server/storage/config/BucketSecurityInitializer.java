@@ -2,6 +2,8 @@ package com.example.server.storage.config;
 
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.AbortIncompleteMultipartUpload;
@@ -21,6 +23,8 @@ import java.util.List;
 
 @Component
 public class BucketSecurityInitializer implements ApplicationRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(BucketSecurityInitializer.class);
 
     private final S3Client s3Client;
     private final S3StorageProperties properties;
@@ -83,10 +87,18 @@ public class BucketSecurityInitializer implements ApplicationRunner {
                 .exposeHeaders("ETag")
                 .maxAgeSeconds(3600)
                 .build();
-        s3Client.putBucketCors(PutBucketCorsRequest.builder()
-                .bucket(properties.bucket())
-                .corsConfiguration(configuration -> configuration.corsRules(rule))
-                .build());
+        try {
+            s3Client.putBucketCors(PutBucketCorsRequest.builder()
+                    .bucket(properties.bucket())
+                    .corsConfiguration(configuration -> configuration.corsRules(rule))
+                    .build());
+        } catch (S3Exception exception) {
+            if (exception.statusCode() != 501) {
+                throw exception;
+            }
+            log.warn("Object storage does not support bucket CORS configuration; skip it. bucket={}",
+                    properties.bucket());
+        }
     }
 
     private void configureLifecycle() {
@@ -104,10 +116,19 @@ public class BucketSecurityInitializer implements ApplicationRunner {
                 .filter(LifecycleRuleFilter.builder().prefix("temporary/").build())
                 .expiration(LifecycleExpiration.builder().days(1).build())
                 .build();
-        s3Client.putBucketLifecycleConfiguration(PutBucketLifecycleConfigurationRequest.builder()
-                .bucket(properties.bucket())
-                .lifecycleConfiguration(configuration ->
-                        configuration.rules(List.of(abortIncompleteUploads, expireTemporaryObjects)))
-                .build());
+        try {
+            s3Client.putBucketLifecycleConfiguration(PutBucketLifecycleConfigurationRequest.builder()
+                    .bucket(properties.bucket())
+                    .lifecycleConfiguration(configuration ->
+                            configuration.rules(List.of(abortIncompleteUploads, expireTemporaryObjects)))
+                    .build());
+        } catch (S3Exception exception) {
+            if (exception.statusCode() != 400 && exception.statusCode() != 501) {
+                throw exception;
+            }
+            log.warn("Object storage does not accept lifecycle configuration; skip it. bucket={}, statusCode={}",
+                    properties.bucket(),
+                    exception.statusCode());
+        }
     }
 }

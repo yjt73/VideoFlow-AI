@@ -56,4 +56,37 @@ describe('MultipartTransport', () => {
       { method: 'DELETE' }
     )
   })
+
+  it('MinIO 直传请求未发出时，保留对象存储地址和原始原因', async () => {
+    const apiFetch = vi.fn(async () => ({
+      url: 'http://localhost:9000/media?signature=secret'
+    }))
+    const directFetch = vi.fn(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    const transport = new MultipartTransport({ apiFetch, directFetch })
+
+    await expect(transport.uploadPart('session-1', 1, new Blob(['part'])))
+      .rejects.toThrow('MinIO 分片直传请求未发出（http://localhost:9000）：Failed to fetch')
+  })
+
+  it('使用默认 fetch 时保留浏览器全局对象上下文', async () => {
+    const nativeFetch = globalThis.fetch
+    vi.stubGlobal('fetch', function () {
+      if (this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation")
+      }
+      return Promise.resolve({
+        ok: true,
+        headers: new Headers({ ETag: '"etag-1"' })
+      })
+    })
+    const transport = new MultipartTransport({
+      apiFetch: vi.fn(async () => ({ url: 'http://localhost:9000/media?signature=secret' }))
+    })
+
+    await expect(transport.uploadPart('session-1', 1, new Blob(['part']))).resolves.toBe('etag-1')
+
+    vi.stubGlobal('fetch', nativeFetch)
+  })
 })

@@ -1,5 +1,5 @@
 export class MultipartTransport {
-  constructor({ apiFetch, directFetch = fetch }) {
+  constructor({ apiFetch, directFetch = (...args) => globalThis.fetch(...args) }) {
     this.apiFetch = apiFetch
     this.directFetch = directFetch
   }
@@ -18,11 +18,20 @@ export class MultipartTransport {
       `/media/multipart/${encodeURIComponent(sessionId)}/parts/${partNumber}/url`,
       { method: 'POST', signal }
     )
-    const response = await this.directFetch(signed.url, {
-      method: 'PUT',
-      body: blob,
-      signal
-    })
+    let response
+    try {
+      response = await this.directFetch(signed.url, {
+        method: 'PUT',
+        body: blob,
+        signal
+      })
+    } catch (cause) {
+      const error = new Error(
+        `MinIO 分片直传请求未发出（${new URL(signed.url).origin}）：${cause.message}`
+      )
+      error.cause = cause
+      throw error
+    }
     if (!response.ok) {
       const error = new Error(`分片直传失败 (${response.status})`)
       error.status = response.status

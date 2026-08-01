@@ -232,4 +232,21 @@ describe('UploadManager', () => {
     expect(storage.removeItem).toHaveBeenCalled()
     expect(manager.snapshot.state).toBe(UPLOAD_STATES.CANCELLED)
   })
+
+  it('服务端 Abort 失败时仍会取消本地上传状态', async () => {
+    const storage = memoryStorage()
+    const transport = createTransport({
+      abort: vi.fn(async () => { throw Object.assign(new Error('temporary'), { status: 503 }) })
+    })
+    const { manager } = createManager({ transport, storage })
+    manager.file = fileOf('a')
+    manager.userId = 1
+    manager.fileMd5 = FILE_MD5
+    manager.sessionId = 'session-1'
+
+    await expect(manager.cancel()).resolves.toBeUndefined()
+
+    expect(storage.removeItem).toHaveBeenCalled()
+    expect(manager.snapshot.state).toBe(UPLOAD_STATES.CANCELLED)
+  })
 })

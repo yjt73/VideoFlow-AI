@@ -171,8 +171,8 @@ export class UploadManager {
     if (sessionId) {
       try {
         await this.transport.abort(sessionId)
-      } catch (error) {
-        if (!isExpiredUpload(error)) throw error
+      } catch {
+        // 取消必须优先释放本地文件与页面状态；服务端会在上传会话过期后清理残留。
       }
     }
     this.clearStoredUpload()
@@ -425,8 +425,6 @@ export class UploadManager {
     this.onChange(this.snapshot)
   }
 }
-
-const isExpiredUpload = (error) => error?.errorCode === 'UPLOAD_SESSION_EXPIRED'
 
 const isRetryable = (error) => {
   if (error?.name === 'AbortError') return false

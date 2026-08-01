@@ -355,7 +355,7 @@ const uploadStatusText = computed(() => {
     [UPLOAD_STATES.HASHING]: '正在计算文件 MD5...',
     [UPLOAD_STATES.UPLOADING]: '正在并发上传分片...',
     [UPLOAD_STATES.RETRYING]: `服务暂时不可用，正在第 ${uploadTask.value.retryCount} 次重试...`,
-    [UPLOAD_STATES.PAUSED]: '上传已暂停，可在服务恢复后继续',
+    [UPLOAD_STATES.PAUSED]: `上传已暂停：${uploadTask.value.lastError || '可在服务恢复后继续'}`,
     [UPLOAD_STATES.MERGING]: '分片完成，正在校验并合并...',
     [UPLOAD_STATES.FAILED]: uploadTask.value.lastError || '上传失败'
   }
@@ -430,7 +430,7 @@ const uploadFile = async () => {
       showMsg(uploadTask.value.deduplicated ? '✅ 文件已存在，秒传完成' : '✅ 本地上传完成')
       await fetchList()
     } else if (uploadTask.value.state === UPLOAD_STATES.PAUSED) {
-      showMsg('⚠️ 自动重试已达到上限，上传已暂停', true)
+      showMsg(`⚠️ 自动重试已达到上限，上传已暂停：${uploadTask.value.lastError || '请稍后继续'}`, true)
     } else if (uploadTask.value.state === UPLOAD_STATES.FAILED) {
       showMsg('❌ 上传失败: ' + uploadTask.value.lastError, true)
     }
