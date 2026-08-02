@@ -4,6 +4,7 @@ import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 public record MultipartCheckView(
         UploadState state,
@@ -11,6 +12,7 @@ public record MultipartCheckView(
         MediaFile media,
         long partSize,
         int totalParts,
-        LocalDateTime expiresAt
+        LocalDateTime expiresAt,
+        List<CompletedPartRequest> completedParts
 ) {
 }

@@ -46,6 +46,16 @@ public class MultipartUploadController {
         );
     }
 
+    @PostMapping("/media/multipart/{sessionId}/progress")
+    public ApiResponse<Void> recordProgress(
+            @PathVariable String sessionId,
+            @Valid @RequestBody MultipartProgressRequest request,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        service.recordProgress(sessionId, request, currentUser.userId());
+        return ApiResponse.success(null);
+    }
+
     @PostMapping("/media/multipart/{sessionId}/complete")
     public ApiResponse<MediaFile> complete(
             @PathVariable String sessionId,

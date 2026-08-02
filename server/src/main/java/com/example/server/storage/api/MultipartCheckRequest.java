@@ -10,6 +10,7 @@ public record MultipartCheckRequest(
         @NotBlank @Pattern(regexp = "[0-9a-f]{32}") String contentHash,
         @Positive long sizeBytes,
         @NotBlank @Size(max = 128) String contentType,
-        @Positive int totalParts
+        @Positive int totalParts,
+        @Size(max = 36) String sessionId
 ) {
 }

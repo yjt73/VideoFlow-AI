@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.time.LocalDateTime;
 
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -97,6 +98,25 @@ class MultipartUploadControllerTest {
                         .header("Authorization", "Bearer " + tokenFor(3L)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.errorCode").value("FORBIDDEN"));
+    }
+
+    @Test
+    void recordsCompletedPartProgress() throws Exception {
+        mockMvc.perform(post("/media/multipart/session-1/progress")
+                        .header("Authorization", "Bearer " + tokenFor(3L))
+                        .contentType("application/json")
+                        .content("""
+                                {"parts":[{"partNumber":1,"etag":"etag-1"}]}
+                                """))
+                .andExpect(status().isOk());
+
+        verify(service).recordProgress(
+                "session-1",
+                new MultipartProgressRequest(java.util.List.of(
+                        new CompletedPartRequest(1, "etag-1")
+                )),
+                3L
+        );
     }
 
     private String tokenFor(Long userId) {

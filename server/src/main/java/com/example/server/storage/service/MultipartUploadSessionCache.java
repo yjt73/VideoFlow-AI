@@ -39,6 +39,7 @@ public class MultipartUploadSessionCache {
                     sessionId,
                     value(values, "providerUploadId"),
                     Long.valueOf(value(values, "userId")),
+                    value(values, "contentHash"),
                     value(values, "temporaryObjectKey"),
                     Integer.parseInt(value(values, "totalParts")),
                     LocalDateTime.parse(value(values, "expiresAt")),
@@ -60,6 +61,7 @@ public class MultipartUploadSessionCache {
             Map<String, String> values = new HashMap<>();
             values.put("providerUploadId", snapshot.providerUploadId());
             values.put("userId", snapshot.userId().toString());
+            values.put("contentHash", snapshot.contentHash());
             values.put("temporaryObjectKey", snapshot.temporaryObjectKey());
             values.put("totalParts", Integer.toString(snapshot.totalParts()));
             values.put("expiresAt", snapshot.expiresAt().toString());
@@ -73,20 +75,25 @@ public class MultipartUploadSessionCache {
         }
     }
 
-    public List<CompletedPartRequest> findParts(String sessionId) {
+    public Optional<List<CompletedPartRequest>> findParts(String sessionId) {
         try {
-            return redisTemplate.opsForHash().entries(partsKey(sessionId)).entrySet()
+            Map<Object, Object> values = redisTemplate.opsForHash().entries(partsKey(sessionId));
+            if (values.isEmpty()) {
+                return Optional.empty();
+            }
+            return Optional.of(values.entrySet()
                     .stream()
+                    .filter(entry -> !"__initialized".equals(entry.getKey().toString()))
                     .map(entry -> new CompletedPartRequest(
                             Integer.parseInt(entry.getKey().toString()),
                             entry.getValue().toString()
                     ))
                     .sorted(Comparator.comparingInt(CompletedPartRequest::partNumber))
-                    .toList();
+                    .toList());
         } catch (RuntimeException exception) {
             log.warn("读取分片上传进度缓存失败: sessionId={}, cause={}",
                     sessionId, exception.getMessage());
-            return List.of();
+            return Optional.empty();
         }
     }
 
@@ -95,17 +102,17 @@ public class MultipartUploadSessionCache {
             List<CompletedPartRequest> parts,
             LocalDateTime expiresAt
     ) {
-        if (parts == null || parts.isEmpty()) {
-            return;
-        }
         Duration ttl = ttl(expiresAt);
         if (ttl.isZero()) {
             return;
         }
         try {
             Map<String, String> values = new HashMap<>();
-            for (CompletedPartRequest part : parts) {
-                values.put(Integer.toString(part.partNumber()), part.etag());
+            values.put("__initialized", "1");
+            if (parts != null) {
+                for (CompletedPartRequest part : parts) {
+                    values.put(Integer.toString(part.partNumber()), part.etag());
+                }
             }
             String key = partsKey(sessionId);
             redisTemplate.opsForHash().putAll(key, values);

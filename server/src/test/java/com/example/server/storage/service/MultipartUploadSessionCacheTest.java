@@ -39,6 +39,7 @@ class MultipartUploadSessionCacheTest {
                 .thenReturn(Map.of(
                         "providerUploadId", "provider-1",
                         "userId", "3",
+                        "contentHash", "0123456789abcdef0123456789abcdef",
                         "temporaryObjectKey", "temporary/3/session-1/course.mp4",
                         "totalParts", "2",
                         "expiresAt", snapshot.expiresAt().toString(),
@@ -61,10 +62,11 @@ class MultipartUploadSessionCacheTest {
                 new CompletedPartRequest(2, "etag-2")
         ), snapshot().expiresAt());
 
-        assertThat(cache.findParts("session-1")).containsExactly(
-                new CompletedPartRequest(1, "etag-1"),
-                new CompletedPartRequest(2, "etag-2")
-        );
+        assertThat(cache.findParts("session-1")).hasValueSatisfying(parts ->
+                assertThat(parts).containsExactly(
+                        new CompletedPartRequest(1, "etag-1"),
+                        new CompletedPartRequest(2, "etag-2")
+                ));
     }
 
     @Test
@@ -80,6 +82,7 @@ class MultipartUploadSessionCacheTest {
                 "session-1",
                 "provider-1",
                 3L,
+                "0123456789abcdef0123456789abcdef",
                 "temporary/3/session-1/course.mp4",
                 2,
                 LocalDateTime.of(2026, 8, 3, 12, 0),

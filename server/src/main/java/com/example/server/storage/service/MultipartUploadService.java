@@ -5,8 +5,10 @@ import com.example.server.api.BusinessException;
 import com.example.server.api.ErrorCode;
 import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
+import com.example.server.storage.api.CompletedPartRequest;
 import com.example.server.storage.api.MultipartCheckRequest;
 import com.example.server.storage.api.MultipartCheckView;
+import com.example.server.storage.api.MultipartProgressRequest;
 import com.example.server.storage.api.PresignedPartView;
 import com.example.server.storage.domain.MultipartUploadSession;
 import com.example.server.storage.domain.MultipartUploadStatus;
@@ -21,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -35,6 +38,7 @@ public class MultipartUploadService {
     private final MediaReferenceService mediaReferenceService;
     private final StorageObjectKeyFactory keyFactory;
     private final S3MultipartGateway gateway;
+    private final MultipartUploadSessionCache cache;
     private final Duration uploadUrlTtl;
     private final String bucketName;
 
@@ -44,6 +48,7 @@ public class MultipartUploadService {
             MediaReferenceService mediaReferenceService,
             StorageObjectKeyFactory keyFactory,
             S3MultipartGateway gateway,
+            MultipartUploadSessionCache cache,
             @Value("${storage.s3.upload-url-ttl:15m}") Duration uploadUrlTtl,
             @Value("${storage.s3.bucket:media}") String bucketName
     ) {
@@ -52,6 +57,7 @@ public class MultipartUploadService {
         this.mediaReferenceService = mediaReferenceService;
         this.keyFactory = keyFactory;
         this.gateway = gateway;
+        this.cache = cache;
         this.uploadUrlTtl = uploadUrlTtl;
         this.bucketName = bucketName;
     }
@@ -81,6 +87,11 @@ public class MultipartUploadService {
         }
 
         LocalDateTime now = LocalDateTime.now();
+        MultipartCheckView requestedSession = resumeRequestedSession(request, userId, now);
+        if (requestedSession != null) {
+            return requestedSession;
+        }
+
         MultipartUploadSession resumable = sessionMapper.selectOne(
                 new LambdaQueryWrapper<MultipartUploadSession>()
                         .eq(MultipartUploadSession::getUserId, userId)
@@ -90,7 +101,7 @@ public class MultipartUploadService {
                         .last("LIMIT 1")
         );
         if (resumable != null) {
-            return uploading(resumable);
+            return resumeFromStorage(resumable);
         }
 
         String sessionId = UUID.randomUUID().toString();
@@ -111,27 +122,25 @@ public class MultipartUploadService {
         session.setStatus(MultipartUploadStatus.INITIATED);
         session.setExpiresAt(now.plus(SESSION_TTL));
         sessionMapper.insert(session);
-        return uploading(session);
+
+        MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
+        cache.putSession(snapshot);
+        cache.putParts(sessionId, List.of(), session.getExpiresAt());
+        return uploading(snapshot, List.of());
     }
 
     public PresignedPartView presignPart(String sessionId, int partNumber, Long userId) {
-        MultipartUploadSession session = findSession(sessionId);
-        if (!session.getUserId().equals(userId)) {
-            throw new AccessDeniedException("无权操作该上传会话");
-        }
-        LocalDateTime now = LocalDateTime.now();
-        if (session.getStatus() != MultipartUploadStatus.INITIATED
-                || !session.getExpiresAt().isAfter(now)) {
-            throw new BusinessException(ErrorCode.UPLOAD_SESSION_EXPIRED, "上传会话已失效");
-        }
-        if (partNumber < 1 || partNumber > session.getTotalParts()) {
+        MultipartSessionSnapshot session = findSnapshot(sessionId);
+        validateOwnedActiveSession(session, userId);
+        if (partNumber < 1 || partNumber > session.totalParts()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "分片序号超出范围");
         }
+        LocalDateTime now = LocalDateTime.now();
         return new PresignedPartView(
                 partNumber,
                 gateway.presignPart(
-                        session.getTemporaryObjectKey(),
-                        session.getProviderUploadId(),
+                        session.temporaryObjectKey(),
+                        session.providerUploadId(),
                         partNumber,
                         uploadUrlTtl
                 ).toString(),
@@ -139,16 +148,114 @@ public class MultipartUploadService {
         );
     }
 
+    public void recordProgress(
+            String sessionId,
+            MultipartProgressRequest request,
+            Long userId
+    ) {
+        MultipartSessionSnapshot session = findSnapshot(sessionId);
+        validateOwnedActiveSession(session, userId);
+        if (request == null || request.parts() == null || request.parts().isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "分片进度不能为空");
+        }
+        for (CompletedPartRequest part : request.parts()) {
+            if (part == null
+                    || part.partNumber() < 1
+                    || part.partNumber() > session.totalParts()
+                    || part.etag() == null
+                    || part.etag().isBlank()) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "分片进度不合法");
+            }
+        }
+        cache.putParts(sessionId, request.parts(), session.expiresAt());
+    }
+
+    private MultipartCheckView resumeRequestedSession(
+            MultipartCheckRequest request,
+            Long userId,
+            LocalDateTime now
+    ) {
+        if (request.sessionId() == null || request.sessionId().isBlank()) {
+            return null;
+        }
+        Optional<MultipartSessionSnapshot> cached = cache.findSession(request.sessionId());
+        if (cached.isPresent() && matches(cached.get(), request, userId, now)) {
+            MultipartSessionSnapshot snapshot = cached.get();
+            List<CompletedPartRequest> parts = cache.findParts(snapshot.sessionId())
+                    .orElseGet(() -> rebuildParts(snapshot));
+            return uploading(snapshot, parts);
+        }
+
+        MultipartUploadSession session = findSession(request.sessionId());
+        if (session == null) {
+            return null;
+        }
+        MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
+        if (!matches(snapshot, request, userId, now)) {
+            return null;
+        }
+        return resumeFromStorage(session);
+    }
+
+    private boolean matches(
+            MultipartSessionSnapshot snapshot,
+            MultipartCheckRequest request,
+            Long userId,
+            LocalDateTime now
+    ) {
+        return snapshot.userId().equals(userId)
+                && snapshot.contentHash().equals(request.contentHash())
+                && snapshot.totalParts() == request.totalParts()
+                && snapshot.status() == MultipartUploadStatus.INITIATED
+                && snapshot.expiresAt().isAfter(now);
+    }
+
+    private MultipartCheckView resumeFromStorage(MultipartUploadSession session) {
+        MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
+        cache.putSession(snapshot);
+        List<CompletedPartRequest> parts = rebuildParts(snapshot);
+        return uploading(snapshot, parts);
+    }
+
+    private List<CompletedPartRequest> rebuildParts(MultipartSessionSnapshot snapshot) {
+        List<CompletedPartRequest> parts = gateway.listParts(
+                snapshot.temporaryObjectKey(),
+                snapshot.providerUploadId()
+        );
+        cache.putParts(snapshot.sessionId(), parts, snapshot.expiresAt());
+        return parts;
+    }
+
+    private MultipartSessionSnapshot findSnapshot(String sessionId) {
+        Optional<MultipartSessionSnapshot> cached = cache.findSession(sessionId);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+        MultipartUploadSession session = findSession(sessionId);
+        if (session == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "上传会话不存在");
+        }
+        MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
+        cache.putSession(snapshot);
+        return snapshot;
+    }
+
     private MultipartUploadSession findSession(String sessionId) {
-        MultipartUploadSession session = sessionMapper.selectOne(
+        return sessionMapper.selectOne(
                 new LambdaQueryWrapper<MultipartUploadSession>()
                         .eq(MultipartUploadSession::getSessionId, sessionId)
                         .last("LIMIT 1")
         );
-        if (session == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "上传会话不存在");
+    }
+
+    private void validateOwnedActiveSession(MultipartSessionSnapshot session, Long userId) {
+        if (!session.userId().equals(userId)) {
+            throw new AccessDeniedException("无权操作该上传会话");
         }
-        return session;
+        if (session.status() != MultipartUploadStatus.INITIATED
+                || !session.expiresAt().isAfter(LocalDateTime.now())) {
+            throw new BusinessException(ErrorCode.UPLOAD_SESSION_EXPIRED, "上传会话已失效");
+        }
     }
 
     private void validate(MultipartCheckRequest request) {
@@ -182,18 +289,23 @@ public class MultipartUploadService {
                 media,
                 PART_SIZE,
                 totalParts,
-                null
+                null,
+                List.of()
         );
     }
 
-    private MultipartCheckView uploading(MultipartUploadSession session) {
+    private MultipartCheckView uploading(
+            MultipartSessionSnapshot session,
+            List<CompletedPartRequest> completedParts
+    ) {
         return new MultipartCheckView(
                 UploadState.UPLOADING,
-                session.getSessionId(),
+                session.sessionId(),
                 null,
-                session.getPartSize(),
-                session.getTotalParts(),
-                session.getExpiresAt()
+                PART_SIZE,
+                session.totalParts(),
+                session.expiresAt(),
+                completedParts
         );
     }
 }
