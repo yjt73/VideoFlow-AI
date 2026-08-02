@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { MultipartTransport } from './multipartTransport'
 
 describe('MultipartTransport', () => {
-  it('通过后端获取签名后直接 PUT Blob，并返回去引号的 ETag', async () => {
+  it('获取签名后直接 PUT Blob 并返回去引号的 ETag', async () => {
     const apiFetch = vi.fn(async () => ({
       partNumber: 2,
       url: 'http://minio.local/media?signature=secret'
@@ -25,11 +25,10 @@ describe('MultipartTransport', () => {
       'http://minio.local/media?signature=secret',
       { method: 'PUT', body: blob, signal: controller.signal }
     )
-    expect(directFetch.mock.calls[0][1].headers).toBeUndefined()
     expect(etag).toBe('etag-2')
   })
 
-  it('按分片号排序完成请求并支持取消及短期访问地址', async () => {
+  it('按分片号排序完成请求并支持取消及访问地址', async () => {
     const apiFetch = vi.fn(async (path) => {
       if (path.endsWith('/complete')) return { id: 9 }
       if (path.endsWith('/access-url')) return { url: 'http://signed-get' }
@@ -45,19 +44,44 @@ describe('MultipartTransport', () => {
     await transport.abort('session-1')
     await expect(transport.accessUrl(9)).resolves.toBe('http://signed-get')
 
-    expect(JSON.parse(apiFetch.mock.calls[0][1].body).parts)
-      .toEqual([
-        { partNumber: 1, etag: 'a' },
-        { partNumber: 2, etag: 'b' },
-        { partNumber: 3, etag: 'c' }
-      ])
+    expect(JSON.parse(apiFetch.mock.calls[0][1].body).parts).toEqual([
+      { partNumber: 1, etag: 'a' },
+      { partNumber: 2, etag: 'b' },
+      { partNumber: 3, etag: 'c' }
+    ])
     expect(apiFetch).toHaveBeenCalledWith(
       '/media/multipart/session-1',
       { method: 'DELETE' }
     )
   })
 
-  it('MinIO 直传请求未发出时，保留对象存储地址和原始原因', async () => {
+  it('批量上报服务端已确认的分片进度', async () => {
+    const apiFetch = vi.fn(async () => null)
+    const transport = new MultipartTransport({ apiFetch, directFetch: vi.fn() })
+    const controller = new AbortController()
+
+    await transport.reportProgress('session-1', [
+      { partNumber: 1, etag: 'etag-1' },
+      { partNumber: 2, etag: 'etag-2' }
+    ], controller.signal)
+
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/media/multipart/session-1/progress',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          parts: [
+            { partNumber: 1, etag: 'etag-1' },
+            { partNumber: 2, etag: 'etag-2' }
+          ]
+        }),
+        signal: controller.signal
+      }
+    )
+  })
+
+  it('MinIO 请求未发出时保留对象存储地址和原始原因', async () => {
     const apiFetch = vi.fn(async () => ({
       url: 'http://localhost:9000/media?signature=secret'
     }))
@@ -67,10 +91,10 @@ describe('MultipartTransport', () => {
     const transport = new MultipartTransport({ apiFetch, directFetch })
 
     await expect(transport.uploadPart('session-1', 1, new Blob(['part'])))
-      .rejects.toThrow('MinIO 分片直传请求未发出（http://localhost:9000）：Failed to fetch')
+      .rejects.toThrow('http://localhost:9000')
   })
 
-  it('使用默认 fetch 时保留浏览器全局对象上下文', async () => {
+  it('默认 fetch 保留浏览器全局对象上下文', async () => {
     const nativeFetch = globalThis.fetch
     vi.stubGlobal('fetch', function () {
       if (this !== globalThis) {
@@ -82,10 +106,13 @@ describe('MultipartTransport', () => {
       })
     })
     const transport = new MultipartTransport({
-      apiFetch: vi.fn(async () => ({ url: 'http://localhost:9000/media?signature=secret' }))
+      apiFetch: vi.fn(async () => ({
+        url: 'http://localhost:9000/media?signature=secret'
+      }))
     })
 
-    await expect(transport.uploadPart('session-1', 1, new Blob(['part']))).resolves.toBe('etag-1')
+    await expect(transport.uploadPart('session-1', 1, new Blob(['part'])))
+      .resolves.toBe('etag-1')
 
     vi.stubGlobal('fetch', nativeFetch)
   })

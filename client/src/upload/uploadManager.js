@@ -22,6 +22,7 @@ export class UploadManager {
     storage = localStorage,
     concurrency = 3,
     chunkSize = DEFAULT_PART_SIZE,
+    progressBatchSize = 5,
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     onlineTarget = typeof window === 'undefined' ? null : window,
     onChange = () => {}
@@ -31,6 +32,7 @@ export class UploadManager {
     this.storage = storage
     this.concurrency = concurrency
     this.chunkSize = chunkSize
+    this.progressBatchSize = progressBatchSize
     this.sleep = sleep
     this.onlineTarget = onlineTarget
     this.onChange = onChange
@@ -56,6 +58,8 @@ export class UploadManager {
     this.totalParts = 0
     this.partSize = this.chunkSize
     this.completedParts = new Map()
+    this.pendingProgress = new Map()
+    this.progressFlushPromise = null
     this.state = UPLOAD_STATES.IDLE
     this.retryCount = 0
     this.hashProgress = 0
@@ -92,9 +96,12 @@ export class UploadManager {
     this.file = file
     this.userId = userId
     this.fileMd5 = null
+    this.sessionId = null
     this.totalParts = Math.ceil(file.size / this.chunkSize)
     this.partSize = this.chunkSize
     this.completedParts = new Map()
+    this.pendingProgress = new Map()
+    this.progressFlushPromise = null
     this.retryCount = 0
     this.progress = 0
     this.hashProgress = 0
@@ -116,6 +123,7 @@ export class UploadManager {
         this.controllers.delete(controller)
       }
       this.ensureCurrent(version)
+      this.restoreStoredSession()
       const check = await this.retryOperation(
         () => this.withController(
           (signal) => this.transport.check(this.metadata(), signal),
@@ -191,7 +199,8 @@ export class UploadManager {
       contentHash: this.fileMd5,
       sizeBytes: this.file.size,
       contentType: this.file.type || 'application/octet-stream',
-      totalParts: this.totalParts
+      totalParts: this.totalParts,
+      ...(this.sessionId ? { sessionId: this.sessionId } : {})
     }
   }
 
@@ -209,7 +218,7 @@ export class UploadManager {
     this.sessionId = check.sessionId
     this.partSize = check.partSize
     this.totalParts = check.totalParts
-    this.restoreCompletedParts()
+    this.applyCompletedParts(check.completedParts)
     this.persistUpload()
     this.updateProgress()
 
@@ -238,8 +247,10 @@ export class UploadManager {
         )
         this.ensureCurrent(version)
         this.completedParts.set(partNumber, etag)
+        this.pendingProgress.set(partNumber, etag)
         this.persistUpload()
         this.updateProgress()
+        await this.flushProgress(version)
       }
     }
 
@@ -273,19 +284,23 @@ export class UploadManager {
   async complete(version) {
     this.resumeStage = 'merging'
     if (this.mergePromise) return this.mergePromise
-    this.setState(UPLOAD_STATES.MERGING)
-    this.mergePromise = this.retryOperation(
-      () => this.withController(
-        (signal) => this.transport.complete(
-          this.sessionId,
-          this.sortedCompletedParts(),
-          signal
+    this.mergePromise = (async () => {
+      await this.flushProgress(version, true)
+      this.ensureCurrent(version)
+      this.setState(UPLOAD_STATES.MERGING)
+      return this.retryOperation(
+        () => this.withController(
+          (signal) => this.transport.complete(
+            this.sessionId,
+            this.sortedCompletedParts(),
+            signal
+          ),
+          version
         ),
-        version
-      ),
-      version,
-      'merging'
-    ).then((media) => {
+        version,
+        'merging'
+      )
+    })().then((media) => {
       this.ensureCurrent(version)
       this.media = media
       this.progress = 100
@@ -372,29 +387,69 @@ export class UploadManager {
   persistUpload() {
     this.storage.setItem(this.storageKey(), JSON.stringify({
       sessionId: this.sessionId,
-      completedParts: this.sortedCompletedParts()
+      filename: this.file.name
     }))
   }
 
-  restoreCompletedParts() {
-    this.completedParts = new Map()
+  restoreStoredSession() {
     const stored = this.storage.getItem(this.storageKey())
     if (!stored) return
     try {
       const parsed = JSON.parse(stored)
-      if (parsed.sessionId !== this.sessionId || !Array.isArray(parsed.completedParts)) return
-      for (const part of parsed.completedParts) {
-        if (Number.isInteger(part.partNumber)
-          && part.partNumber >= 1
-          && part.partNumber <= this.totalParts
-          && typeof part.etag === 'string'
-          && part.etag) {
-          this.completedParts.set(part.partNumber, part.etag)
-        }
+      if (typeof parsed.sessionId === 'string'
+        && parsed.sessionId
+        && parsed.filename === this.file.name) {
+        this.sessionId = parsed.sessionId
       }
     } catch {
       this.clearStoredUpload()
     }
+  }
+
+  applyCompletedParts(parts) {
+    this.completedParts = new Map()
+    if (!Array.isArray(parts)) return
+    for (const part of parts) {
+      if (Number.isInteger(part.partNumber)
+        && part.partNumber >= 1
+        && part.partNumber <= this.totalParts
+        && typeof part.etag === 'string'
+        && part.etag) {
+        this.completedParts.set(part.partNumber, part.etag)
+      }
+    }
+  }
+
+  async flushProgress(version, force = false) {
+    if (!force && this.pendingProgress.size < this.progressBatchSize) return
+    if (this.progressFlushPromise) {
+      await this.progressFlushPromise
+      if (force && this.pendingProgress.size > 0) {
+        return this.flushProgress(version, true)
+      }
+      return
+    }
+    if (this.pendingProgress.size === 0) return
+
+    const parts = [...this.pendingProgress.entries()]
+      .map(([partNumber, etag]) => ({ partNumber, etag }))
+      .sort((left, right) => left.partNumber - right.partNumber)
+    for (const part of parts) this.pendingProgress.delete(part.partNumber)
+
+    this.progressFlushPromise = this.retryOperation(
+      () => this.withController(
+        (signal) => this.transport.reportProgress(this.sessionId, parts, signal),
+        version
+      ),
+      version,
+      'uploading'
+    ).catch((error) => {
+      for (const part of parts) this.pendingProgress.set(part.partNumber, part.etag)
+      throw error
+    }).finally(() => {
+      this.progressFlushPromise = null
+    })
+    return this.progressFlushPromise
   }
 
   clearStoredUpload() {

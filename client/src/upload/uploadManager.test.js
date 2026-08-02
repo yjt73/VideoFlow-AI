@@ -32,9 +32,11 @@ const createTransport = (overrides = {}) => ({
     state: 'UPLOADING',
     sessionId: 'session-1',
     partSize: 1,
-    totalParts: 3
+    totalParts: 3,
+    completedParts: []
   })),
   uploadPart: overrides.uploadPart ?? vi.fn(async (_sessionId, partNumber) => `etag-${partNumber}`),
+  reportProgress: overrides.reportProgress ?? vi.fn(async () => {}),
   complete: overrides.complete ?? vi.fn(async () => completedMedia),
   abort: overrides.abort ?? vi.fn(async () => {}),
   accessUrl: overrides.accessUrl ?? vi.fn()
@@ -51,6 +53,7 @@ const createManager = (overrides = {}) => {
     }),
     storage: overrides.storage ?? memoryStorage(),
     concurrency: overrides.concurrency ?? 3,
+    progressBatchSize: overrides.progressBatchSize ?? 5,
     chunkSize: overrides.chunkSize ?? 1,
     sleep: overrides.sleep ?? (async () => {}),
     onlineTarget: overrides.onlineTarget ?? null,
@@ -73,6 +76,11 @@ describe('UploadManager', () => {
       totalParts: 3
     }, expect.any(AbortSignal))
     expect(transport.uploadPart).toHaveBeenCalledTimes(3)
+    expect(transport.reportProgress).toHaveBeenCalledWith('session-1', [
+      { partNumber: 1, etag: 'etag-1' },
+      { partNumber: 2, etag: 'etag-2' },
+      { partNumber: 3, etag: 'etag-3' }
+    ], expect.any(AbortSignal))
     expect(transport.complete).toHaveBeenCalledWith('session-1', [
       { partNumber: 1, etag: 'etag-1' },
       { partNumber: 2, etag: 'etag-2' },
@@ -95,7 +103,8 @@ describe('UploadManager', () => {
         state: 'UPLOADING',
         sessionId: 'session-1',
         partSize: 1,
-        totalParts: 6
+        totalParts: 6,
+        completedParts: []
       })),
       uploadPart: vi.fn(async (_sessionId, partNumber) => {
         active += 1
@@ -120,13 +129,18 @@ describe('UploadManager', () => {
   it('暂停中止当前 PUT，并保留已经完成的 ETag 供恢复使用', async () => {
     const storage = memoryStorage()
     let releaseSecond
+    let serverParts = []
     const transport = createTransport({
       check: vi.fn(async () => ({
         state: 'UPLOADING',
         sessionId: 'session-1',
         partSize: 1,
-        totalParts: 2
+        totalParts: 2,
+        completedParts: serverParts
       })),
+      reportProgress: vi.fn(async (_sessionId, parts) => {
+        serverParts = [...serverParts, ...parts]
+      }),
       uploadPart: vi.fn(async (_sessionId, partNumber, _blob, signal) => {
         if (partNumber === 1) return 'etag-1'
         return new Promise((resolve, reject) => {
@@ -137,7 +151,12 @@ describe('UploadManager', () => {
         })
       })
     })
-    const { manager } = createManager({ transport, storage, concurrency: 1 })
+    const { manager } = createManager({
+      transport,
+      storage,
+      concurrency: 1,
+      progressBatchSize: 1
+    })
 
     const start = manager.start(fileOf('ab'), 1)
     await vi.waitFor(() => expect(transport.uploadPart).toHaveBeenCalledTimes(2))
@@ -146,8 +165,10 @@ describe('UploadManager', () => {
 
     expect(manager.snapshot.state).toBe(UPLOAD_STATES.PAUSED)
     expect(manager.snapshot.completedParts).toEqual([{ partNumber: 1, etag: 'etag-1' }])
-    expect(JSON.parse(storage.setItem.mock.calls.at(-1)[1]).completedParts)
-      .toEqual([{ partNumber: 1, etag: 'etag-1' }])
+    expect(JSON.parse(storage.setItem.mock.calls.at(-1)[1])).toEqual({
+      sessionId: 'session-1',
+      filename: 'demo.mp4'
+    })
 
     transport.uploadPart.mockImplementation(async (_sessionId, partNumber) => `etag-${partNumber}`)
     releaseSecond?.('etag-2')
@@ -165,7 +186,8 @@ describe('UploadManager', () => {
         state: 'UPLOADING',
         sessionId: 'session-1',
         partSize: 1,
-        totalParts: 1
+        totalParts: 1,
+        completedParts: []
       })),
       uploadPart: vi.fn(async () => { throw error })
     })
@@ -189,7 +211,8 @@ describe('UploadManager', () => {
         state: 'UPLOADING',
         sessionId: 'session-1',
         partSize: 1,
-        totalParts: 1
+        totalParts: 1,
+        completedParts: []
       })),
       uploadPart: vi.fn(async () => {
         if (!recovered) throw Object.assign(new Error('offline'), { status: 503 })
@@ -248,5 +271,37 @@ describe('UploadManager', () => {
 
     expect(storage.removeItem).toHaveBeenCalled()
     expect(manager.snapshot.state).toBe(UPLOAD_STATES.CANCELLED)
+  })
+
+  it('使用本地会话定位并以服务端分片进度恢复上传', async () => {
+    const storage = memoryStorage()
+    storage.setItem(`multipart-upload:1:${FILE_MD5}`, JSON.stringify({
+      sessionId: 'session-1',
+      filename: 'demo.mp4',
+      completedParts: [{ partNumber: 2, etag: 'stale-local-etag' }]
+    }))
+    const transport = createTransport({
+      check: vi.fn(async () => ({
+        state: 'UPLOADING',
+        sessionId: 'session-1',
+        partSize: 1,
+        totalParts: 3,
+        completedParts: [{ partNumber: 1, etag: 'server-etag-1' }]
+      }))
+    })
+    const { manager } = createManager({ transport, storage })
+
+    await manager.start(fileOf('abc'), 1)
+
+    expect(transport.check).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-1'
+    }), expect.any(AbortSignal))
+    expect(transport.uploadPart.mock.calls.map(([, partNumber]) => partNumber).sort())
+      .toEqual([2, 3])
+    expect(transport.complete).toHaveBeenCalledWith('session-1', [
+      { partNumber: 1, etag: 'server-etag-1' },
+      { partNumber: 2, etag: 'etag-2' },
+      { partNumber: 3, etag: 'etag-3' }
+    ], expect.any(AbortSignal))
   })
 })

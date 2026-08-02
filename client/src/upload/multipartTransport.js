@@ -58,6 +58,18 @@ export class MultipartTransport {
     )
   }
 
+  reportProgress(sessionId, parts, signal) {
+    return this.apiFetch(
+      `/media/multipart/${encodeURIComponent(sessionId)}/progress`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parts }),
+        signal
+      }
+    )
+  }
+
   abort(sessionId) {
     return this.apiFetch(
       `/media/multipart/${encodeURIComponent(sessionId)}`,
