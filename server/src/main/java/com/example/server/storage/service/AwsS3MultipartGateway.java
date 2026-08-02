@@ -15,6 +15,8 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ListPartsRequest;
+import software.amazon.awssdk.services.s3.model.ListPartsResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -30,6 +32,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.ArrayList;
 
 @Component
 public class AwsS3MultipartGateway implements S3MultipartGateway {
@@ -102,6 +105,35 @@ public class AwsS3MultipartGateway implements S3MultipartGateway {
                     .toURI();
         } catch (Exception exception) {
             throw new DependencyUnavailableException("对象存储暂时无法生成访问地址", exception);
+        }
+    }
+
+    @Override
+    public List<CompletedPartRequest> listParts(
+            String objectKey,
+            String providerUploadId
+    ) {
+        try {
+            List<CompletedPartRequest> parts = new ArrayList<>();
+            Integer marker = null;
+            boolean truncated;
+            do {
+                ListPartsResponse response = s3Client.listParts(ListPartsRequest.builder()
+                        .bucket(properties.bucket())
+                        .key(objectKey)
+                        .uploadId(providerUploadId)
+                        .partNumberMarker(marker)
+                        .build());
+                response.parts().forEach(part -> parts.add(new CompletedPartRequest(
+                        part.partNumber(),
+                        stripQuotes(part.eTag())
+                )));
+                truncated = Boolean.TRUE.equals(response.isTruncated());
+                marker = response.nextPartNumberMarker();
+            } while (truncated);
+            return parts;
+        } catch (RuntimeException exception) {
+            throw new DependencyUnavailableException("对象存储暂时无法查询分片上传进度", exception);
         }
     }
 
@@ -242,5 +274,13 @@ public class AwsS3MultipartGateway implements S3MultipartGateway {
                 )
                 .replace("+", "%20")
                 .replace("%2F", "/");
+    }
+
+    private String stripQuotes(String etag) {
+        if (etag != null && etag.length() >= 2
+                && etag.startsWith("\"") && etag.endsWith("\"")) {
+            return etag.substring(1, etag.length() - 1);
+        }
+        return etag;
     }
 }
