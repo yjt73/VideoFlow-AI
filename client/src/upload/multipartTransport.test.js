@@ -81,6 +81,27 @@ describe('MultipartTransport', () => {
     )
   })
 
+  it('批量申请分片预签名地址', async () => {
+    const apiFetch = vi.fn(async () => [
+      { partNumber: 1, url: 'http://minio.local/part-1' },
+      { partNumber: 2, url: 'http://minio.local/part-2' }
+    ])
+    const transport = new MultipartTransport({ apiFetch, directFetch: vi.fn() })
+    const controller = new AbortController()
+
+    await transport.presignParts('session-1', [1, 2], controller.signal)
+
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/media/multipart/session-1/parts/urls',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partNumbers: [1, 2] }),
+        signal: controller.signal
+      }
+    )
+  })
+
   it('MinIO 请求未发出时保留对象存储地址和原始原因', async () => {
     const apiFetch = vi.fn(async () => ({
       url: 'http://localhost:9000/media?signature=secret'

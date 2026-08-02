@@ -30,6 +30,7 @@ public class MultipartCompletionService {
     private final StorageObjectKeyFactory keyFactory;
     private final S3MultipartGateway gateway;
     private final ObjectIntegrityVerifier integrityVerifier;
+    private final MultipartUploadSessionCache cache;
 
     public MultipartCompletionService(
             MultipartUploadSessionMapper sessionMapper,
@@ -38,7 +39,8 @@ public class MultipartCompletionService {
             MediaReferenceService mediaReferenceService,
             StorageObjectKeyFactory keyFactory,
             S3MultipartGateway gateway,
-            ObjectIntegrityVerifier integrityVerifier
+            ObjectIntegrityVerifier integrityVerifier,
+            MultipartUploadSessionCache cache
     ) {
         this.sessionMapper = sessionMapper;
         this.storageObjectMapper = storageObjectMapper;
@@ -47,6 +49,7 @@ public class MultipartCompletionService {
         this.keyFactory = keyFactory;
         this.gateway = gateway;
         this.integrityVerifier = integrityVerifier;
+        this.cache = cache;
     }
 
     public MediaFile complete(
@@ -61,6 +64,7 @@ public class MultipartCompletionService {
             if (media == null) {
                 throw new BusinessException(ErrorCode.NOT_FOUND, "已完成上传的媒体记录不存在");
             }
+            cache.evict(sessionId);
             return media;
         }
         if (session.getStatus() != MultipartUploadStatus.INITIATED
@@ -73,10 +77,18 @@ public class MultipartCompletionService {
         }
 
         try {
+            List<CompletedPartRequest> actualParts = gateway.listParts(
+                    session.getTemporaryObjectKey(),
+                    session.getProviderUploadId()
+            );
+            validateParts(new CompleteMultipartRequest(actualParts));
+            if (actualParts.size() != session.getTotalParts()) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "对象存储中的分片数量不完整");
+            }
             gateway.complete(
                     session.getTemporaryObjectKey(),
                     session.getProviderUploadId(),
-                    request.parts()
+                    actualParts
             );
         } catch (RuntimeException exception) {
             sessionMapper.restoreInitiated(sessionId);
@@ -87,14 +99,17 @@ public class MultipartCompletionService {
         try (InputStream stream = gateway.open(session.getTemporaryObjectKey())) {
             integrity = integrityVerifier.verify(stream);
         } catch (BusinessException exception) {
+            cache.evict(sessionId);
             sessionMapper.markFailed(sessionId, "对象完整性校验读取失败");
             throw exception;
         } catch (Exception exception) {
+            cache.evict(sessionId);
             sessionMapper.markFailed(sessionId, "对象完整性校验读取失败");
             throw new BusinessException(ErrorCode.DEPENDENCY_UNAVAILABLE, "对象完整性校验读取失败");
         }
         if (!session.getContentHash().equals(integrity.md5())
                 || session.getSizeBytes() != integrity.sizeBytes()) {
+            cache.evict(sessionId);
             sessionMapper.markFailed(sessionId, "对象完整性校验失败");
             gateway.delete(session.getTemporaryObjectKey());
             throw new BusinessException(ErrorCode.BAD_REQUEST, "对象完整性校验失败");
@@ -110,12 +125,14 @@ public class MultipartCompletionService {
             throw new BusinessException(ErrorCode.CONFLICT, "上传完成状态更新失败");
         }
         gateway.delete(session.getTemporaryObjectKey());
+        cache.evict(sessionId);
         return media;
     }
 
     public void abort(String sessionId, Long userId) {
         MultipartUploadSession session = requireOwnedSession(sessionId, userId);
         if (session.getStatus() == MultipartUploadStatus.ABORTED) {
+            cache.evict(sessionId);
             return;
         }
         if (session.getStatus() == MultipartUploadStatus.COMPLETED) {
@@ -128,6 +145,7 @@ public class MultipartCompletionService {
         if (sessionMapper.markAborted(sessionId) != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "上传会话状态已变化");
         }
+        cache.evict(sessionId);
     }
 
     private StorageObject resolveStorageObject(MultipartUploadSession session) {

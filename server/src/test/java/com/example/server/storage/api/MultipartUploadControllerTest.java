@@ -119,6 +119,25 @@ class MultipartUploadControllerTest {
         );
     }
 
+    @Test
+    void returnsBatchPresignedParts() throws Exception {
+        when(service.presignParts("session-1", java.util.List.of(1, 2), 3L))
+                .thenReturn(java.util.List.of(
+                        new PresignedPartView(1, "http://localhost:9000/part-1", LocalDateTime.now()),
+                        new PresignedPartView(2, "http://localhost:9000/part-2", LocalDateTime.now())
+                ));
+
+        mockMvc.perform(post("/media/multipart/session-1/parts/urls")
+                        .header("Authorization", "Bearer " + tokenFor(3L))
+                        .contentType("application/json")
+                        .content("""
+                                {"partNumbers":[1,2]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[1].partNumber").value(2));
+    }
+
     private String tokenFor(Long userId) {
         User user = new User();
         user.setId(userId);

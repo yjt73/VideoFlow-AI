@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -130,22 +131,45 @@ public class MultipartUploadService {
     }
 
     public PresignedPartView presignPart(String sessionId, int partNumber, Long userId) {
-        MultipartSessionSnapshot session = findSnapshot(sessionId);
-        validateOwnedActiveSession(session, userId);
-        if (partNumber < 1 || partNumber > session.totalParts()) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "分片序号超出范围");
+        return presignParts(sessionId, List.of(partNumber), userId).getFirst();
+    }
+
+    public List<PresignedPartView> presignParts(
+            String sessionId,
+            List<Integer> partNumbers,
+            Long userId
+    ) {
+        if (partNumbers == null
+                || partNumbers.isEmpty()
+                || partNumbers.size() > 20
+                || new HashSet<>(partNumbers).size() != partNumbers.size()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "预签名分片列表不合法");
         }
+        MultipartUploadSession current = findSession(sessionId);
+        if (current == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "上传会话不存在");
+        }
+        MultipartSessionSnapshot session = MultipartSessionSnapshot.from(current);
+        validateOwnedActiveSession(session, userId);
+        for (Integer partNumber : partNumbers) {
+            if (partNumber == null || partNumber < 1 || partNumber > session.totalParts()) {
+                throw new BusinessException(ErrorCode.BAD_REQUEST, "分片序号超出范围");
+            }
+        }
+        cache.putSession(session);
         LocalDateTime now = LocalDateTime.now();
-        return new PresignedPartView(
-                partNumber,
-                gateway.presignPart(
-                        session.temporaryObjectKey(),
-                        session.providerUploadId(),
+        return partNumbers.stream()
+                .map(partNumber -> new PresignedPartView(
                         partNumber,
-                        uploadUrlTtl
-                ).toString(),
-                now.plus(uploadUrlTtl)
-        );
+                        gateway.presignPart(
+                                session.temporaryObjectKey(),
+                                session.providerUploadId(),
+                                partNumber,
+                                uploadUrlTtl
+                        ).toString(),
+                        now.plus(uploadUrlTtl)
+                ))
+                .toList();
     }
 
     public void recordProgress(
@@ -153,7 +177,11 @@ public class MultipartUploadService {
             MultipartProgressRequest request,
             Long userId
     ) {
-        MultipartSessionSnapshot session = findSnapshot(sessionId);
+        MultipartUploadSession current = findSession(sessionId);
+        if (current == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "上传会话不存在");
+        }
+        MultipartSessionSnapshot session = MultipartSessionSnapshot.from(current);
         validateOwnedActiveSession(session, userId);
         if (request == null || request.parts() == null || request.parts().isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "分片进度不能为空");
@@ -163,10 +191,12 @@ public class MultipartUploadService {
                     || part.partNumber() < 1
                     || part.partNumber() > session.totalParts()
                     || part.etag() == null
-                    || part.etag().isBlank()) {
+                    || part.etag().isBlank()
+                    || part.etag().length() > 128) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "分片进度不合法");
             }
         }
+        cache.putSession(session);
         cache.putParts(sessionId, request.parts(), session.expiresAt());
     }
 
@@ -178,14 +208,6 @@ public class MultipartUploadService {
         if (request.sessionId() == null || request.sessionId().isBlank()) {
             return null;
         }
-        Optional<MultipartSessionSnapshot> cached = cache.findSession(request.sessionId());
-        if (cached.isPresent() && matches(cached.get(), request, userId, now)) {
-            MultipartSessionSnapshot snapshot = cached.get();
-            List<CompletedPartRequest> parts = cache.findParts(snapshot.sessionId())
-                    .orElseGet(() -> rebuildParts(snapshot));
-            return uploading(snapshot, parts);
-        }
-
         MultipartUploadSession session = findSession(request.sessionId());
         if (session == null) {
             return null;
@@ -194,7 +216,10 @@ public class MultipartUploadService {
         if (!matches(snapshot, request, userId, now)) {
             return null;
         }
-        return resumeFromStorage(session);
+        cache.putSession(snapshot);
+        List<CompletedPartRequest> parts = cache.findParts(snapshot.sessionId())
+                .orElseGet(() -> rebuildParts(snapshot));
+        return uploading(snapshot, parts);
     }
 
     private boolean matches(
@@ -224,20 +249,6 @@ public class MultipartUploadService {
         );
         cache.putParts(snapshot.sessionId(), parts, snapshot.expiresAt());
         return parts;
-    }
-
-    private MultipartSessionSnapshot findSnapshot(String sessionId) {
-        Optional<MultipartSessionSnapshot> cached = cache.findSession(sessionId);
-        if (cached.isPresent()) {
-            return cached.get();
-        }
-        MultipartUploadSession session = findSession(sessionId);
-        if (session == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "上传会话不存在");
-        }
-        MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
-        cache.putSession(snapshot);
-        return snapshot;
     }
 
     private MultipartUploadSession findSession(String sessionId) {

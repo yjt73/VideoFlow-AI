@@ -40,6 +40,7 @@ class MultipartCompletionServiceTest {
     private final MediaFileMapper mediaFileMapper = mock(MediaFileMapper.class);
     private final MediaReferenceService mediaReferenceService = mock(MediaReferenceService.class);
     private final S3MultipartGateway gateway = mock(S3MultipartGateway.class);
+    private final MultipartUploadSessionCache cache = mock(MultipartUploadSessionCache.class);
     private final MultipartCompletionService service = new MultipartCompletionService(
             sessionMapper,
             storageObjectMapper,
@@ -47,12 +48,14 @@ class MultipartCompletionServiceTest {
             mediaReferenceService,
             new StorageObjectKeyFactory(),
             gateway,
-            new ObjectIntegrityVerifier()
+            new ObjectIntegrityVerifier(),
+            cache
     );
 
     MultipartCompletionServiceTest() {
         when(sessionMapper.markCompleted(anyString(), anyLong())).thenReturn(1);
         when(sessionMapper.markAborted(anyString())).thenReturn(1);
+        when(gateway.listParts(anyString(), anyString())).thenReturn(validRequest().parts());
     }
 
     @Test
@@ -86,6 +89,7 @@ class MultipartCompletionServiceTest {
                 .isEqualTo("media/5d/5d41402abc4b2a76b9719d911017c592");
         verify(sessionMapper).markCompleted("session-1", 9L);
         verify(gateway).delete(session.getTemporaryObjectKey());
+        verify(cache).evict("session-1");
         assertThat(result).isSameAs(media);
     }
 
@@ -99,6 +103,38 @@ class MultipartCompletionServiceTest {
         assertThatThrownBy(() -> service.complete("session-1", request, 3L))
                 .isInstanceOf(BusinessException.class);
         verify(gateway, never()).complete(any(), any(), any());
+    }
+
+    @Test
+    void completesWithAuthoritativeObjectStorageEtags() {
+        MultipartUploadSession session = initiatedSession(3L);
+        List<CompletedPartRequest> actualParts = List.of(
+                new CompletedPartRequest(1, "actual-1"),
+                new CompletedPartRequest(2, "actual-2")
+        );
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        when(sessionMapper.claimCompleting("session-1", 3L)).thenReturn(1);
+        when(gateway.listParts(
+                session.getTemporaryObjectKey(),
+                session.getProviderUploadId()
+        )).thenReturn(actualParts);
+        when(gateway.open(session.getTemporaryObjectKey()))
+                .thenReturn(new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
+        StorageObject existing = new StorageObject();
+        existing.setId(8L);
+        when(storageObjectMapper.selectOne(any())).thenReturn(existing);
+        MediaFile media = new MediaFile();
+        media.setId(9L);
+        when(mediaReferenceService.createReference(existing, 3L, "course.mp4"))
+                .thenReturn(media);
+
+        service.complete("session-1", validRequest(), 3L);
+
+        verify(gateway).complete(
+                session.getTemporaryObjectKey(),
+                session.getProviderUploadId(),
+                actualParts
+        );
     }
 
     @Test
@@ -160,6 +196,7 @@ class MultipartCompletionServiceTest {
 
         verify(gateway).abort(session.getTemporaryObjectKey(), session.getProviderUploadId());
         verify(sessionMapper).markAborted("session-1");
+        verify(cache).evict("session-1");
 
         session.setStatus(MultipartUploadStatus.ABORTED);
         service.abort("session-1", 3L);

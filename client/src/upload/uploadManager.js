@@ -23,6 +23,7 @@ export class UploadManager {
     concurrency = 3,
     chunkSize = DEFAULT_PART_SIZE,
     progressBatchSize = 5,
+    urlBatchSize = 12,
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     onlineTarget = typeof window === 'undefined' ? null : window,
     onChange = () => {}
@@ -33,6 +34,7 @@ export class UploadManager {
     this.concurrency = concurrency
     this.chunkSize = chunkSize
     this.progressBatchSize = progressBatchSize
+    this.urlBatchSize = urlBatchSize
     this.sleep = sleep
     this.onlineTarget = onlineTarget
     this.onChange = onChange
@@ -233,15 +235,41 @@ export class UploadManager {
     this.setState(UPLOAD_STATES.UPLOADING)
     const missing = Array.from({ length: this.totalParts }, (_, index) => index + 1)
       .filter((partNumber) => !this.completedParts.has(partNumber))
-    let cursor = 0
 
+    try {
+      for (let offset = 0; offset < missing.length; offset += this.urlBatchSize) {
+        const batch = missing.slice(offset, offset + this.urlBatchSize)
+        const signedParts = await this.retryOperation(
+          () => this.withController(
+            (signal) => this.transport.presignParts(this.sessionId, batch, signal),
+            version
+          ),
+          version,
+          'uploading'
+        )
+        const signedUrls = new Map(signedParts.map((part) => [part.partNumber, part.url]))
+        if (batch.some((partNumber) => !signedUrls.has(partNumber))) {
+          throw new Error('服务端返回的分片预签名地址不完整')
+        }
+        await this.uploadBatch(batch, signedUrls, version)
+      }
+      this.ensureCurrent(version)
+      return await this.complete(version)
+    } catch (error) {
+      if (error instanceof FlowInterrupted) return null
+      throw error
+    }
+  }
+
+  async uploadBatch(partNumbers, signedUrls, version) {
+    let cursor = 0
     const worker = async () => {
-      while (cursor < missing.length) {
+      while (cursor < partNumbers.length) {
         this.ensureCurrent(version)
-        const partNumber = missing[cursor]
+        const partNumber = partNumbers[cursor]
         cursor += 1
         const etag = await this.retryOperation(
-          () => this.uploadPart(partNumber, version),
+          () => this.uploadPart(partNumber, version, signedUrls.get(partNumber)),
           version,
           'uploading'
         )
@@ -253,21 +281,13 @@ export class UploadManager {
         await this.flushProgress(version)
       }
     }
-
-    try {
-      await Promise.all(Array.from(
-        { length: Math.min(this.concurrency, missing.length) },
-        () => worker()
-      ))
-      this.ensureCurrent(version)
-      return await this.complete(version)
-    } catch (error) {
-      if (error instanceof FlowInterrupted) return null
-      throw error
-    }
+    await Promise.all(Array.from(
+      { length: Math.min(this.concurrency, partNumbers.length) },
+      () => worker()
+    ))
   }
 
-  uploadPart(partNumber, version) {
+  uploadPart(partNumber, version, signedUrl) {
     const start = (partNumber - 1) * this.partSize
     const blob = this.file.slice(start, Math.min(this.file.size, start + this.partSize))
     return this.withController(
@@ -275,7 +295,8 @@ export class UploadManager {
         this.sessionId,
         partNumber,
         blob,
-        signal
+        signal,
+        signedUrl
       ),
       version
     )

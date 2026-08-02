@@ -13,11 +13,25 @@ export class MultipartTransport {
     })
   }
 
-  async uploadPart(sessionId, partNumber, blob, signal) {
-    const signed = await this.apiFetch(
-      `/media/multipart/${encodeURIComponent(sessionId)}/parts/${partNumber}/url`,
-      { method: 'POST', signal }
+  presignParts(sessionId, partNumbers, signal) {
+    return this.apiFetch(
+      `/media/multipart/${encodeURIComponent(sessionId)}/parts/urls`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partNumbers }),
+        signal
+      }
     )
+  }
+
+  async uploadPart(sessionId, partNumber, blob, signal, signedUrl = null) {
+    const signed = signedUrl
+      ? { url: signedUrl }
+      : await this.apiFetch(
+        `/media/multipart/${encodeURIComponent(sessionId)}/parts/${partNumber}/url`,
+        { method: 'POST', signal }
+      )
     let response
     try {
       response = await this.directFetch(signed.url, {

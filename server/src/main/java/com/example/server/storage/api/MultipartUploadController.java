@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 @RestController
 public class MultipartUploadController {
 
@@ -43,6 +45,17 @@ public class MultipartUploadController {
     ) {
         return ApiResponse.success(
                 service.presignPart(sessionId, partNumber, currentUser.userId())
+        );
+    }
+
+    @PostMapping("/media/multipart/{sessionId}/parts/urls")
+    public ApiResponse<List<PresignedPartView>> presignParts(
+            @PathVariable String sessionId,
+            @Valid @RequestBody PresignPartsRequest request,
+            @AuthenticationPrincipal AuthenticatedUser currentUser
+    ) {
+        return ApiResponse.success(
+                service.presignParts(sessionId, request.partNumbers(), currentUser.userId())
         );
     }
 

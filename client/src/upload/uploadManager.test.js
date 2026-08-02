@@ -35,6 +35,11 @@ const createTransport = (overrides = {}) => ({
     totalParts: 3,
     completedParts: []
   })),
+  presignParts: overrides.presignParts ?? vi.fn(async (_sessionId, partNumbers) =>
+    partNumbers.map((partNumber) => ({
+      partNumber,
+      url: `http://minio.local/part-${partNumber}`
+    }))),
   uploadPart: overrides.uploadPart ?? vi.fn(async (_sessionId, partNumber) => `etag-${partNumber}`),
   reportProgress: overrides.reportProgress ?? vi.fn(async () => {}),
   complete: overrides.complete ?? vi.fn(async () => completedMedia),
@@ -54,6 +59,7 @@ const createManager = (overrides = {}) => {
     storage: overrides.storage ?? memoryStorage(),
     concurrency: overrides.concurrency ?? 3,
     progressBatchSize: overrides.progressBatchSize ?? 5,
+    urlBatchSize: overrides.urlBatchSize ?? 12,
     chunkSize: overrides.chunkSize ?? 1,
     sleep: overrides.sleep ?? (async () => {}),
     onlineTarget: overrides.onlineTarget ?? null,
@@ -76,6 +82,11 @@ describe('UploadManager', () => {
       totalParts: 3
     }, expect.any(AbortSignal))
     expect(transport.uploadPart).toHaveBeenCalledTimes(3)
+    expect(transport.presignParts).toHaveBeenCalledWith(
+      'session-1',
+      [1, 2, 3],
+      expect.any(AbortSignal)
+    )
     expect(transport.reportProgress).toHaveBeenCalledWith('session-1', [
       { partNumber: 1, etag: 'etag-1' },
       { partNumber: 2, etag: 'etag-2' },

@@ -21,6 +21,7 @@ public class MultipartUploadSessionCache {
     private static final Logger log = LoggerFactory.getLogger(MultipartUploadSessionCache.class);
     private static final String SESSION_PREFIX = "upload:multipart:session:";
     private static final String PARTS_PREFIX = "upload:multipart:parts:";
+    private static final Duration MAX_CACHE_TTL = Duration.ofMinutes(5);
 
     private final StringRedisTemplate redisTemplate;
 
@@ -142,7 +143,10 @@ public class MultipartUploadSessionCache {
 
     private Duration ttl(LocalDateTime expiresAt) {
         Duration ttl = Duration.between(LocalDateTime.now(), expiresAt);
-        return ttl.isNegative() || ttl.isZero() ? Duration.ZERO : ttl;
+        if (ttl.isNegative() || ttl.isZero()) {
+            return Duration.ZERO;
+        }
+        return ttl.compareTo(MAX_CACHE_TTL) > 0 ? MAX_CACHE_TTL : ttl;
     }
 
     private String sessionKey(String sessionId) {

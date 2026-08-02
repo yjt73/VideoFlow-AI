@@ -1,10 +1,12 @@
 package com.example.server.storage.service;
 
+import com.example.server.api.BusinessException;
 import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
 import com.example.server.storage.api.MultipartCheckRequest;
 import com.example.server.storage.api.CompletedPartRequest;
 import com.example.server.storage.api.MultipartProgressRequest;
+import com.example.server.storage.api.PresignedPartView;
 import com.example.server.storage.domain.MultipartUploadSession;
 import com.example.server.storage.domain.MultipartUploadStatus;
 import com.example.server.storage.domain.StorageObject;
@@ -28,6 +30,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 
 class MultipartUploadServiceTest {
@@ -88,8 +91,7 @@ class MultipartUploadServiceTest {
     @Test
     void presignsOnlyAnOwnedActivePart() {
         MultipartUploadSession session = activeSession(3L);
-        when(cache.findSession("session-1"))
-                .thenReturn(Optional.of(MultipartSessionSnapshot.from(session)));
+        when(sessionMapper.selectOne(any())).thenReturn(session);
         when(gateway.presignPart(
                 session.getTemporaryObjectKey(),
                 session.getProviderUploadId(),
@@ -101,20 +103,35 @@ class MultipartUploadServiceTest {
 
         assertThat(result.partNumber()).isEqualTo(2);
         assertThat(result.url()).contains("partNumber=2");
-        verify(sessionMapper, never()).selectOne(any());
+        verify(sessionMapper).selectOne(any());
     }
 
     @Test
     void rejectsAnotherUsersSession() {
-        when(cache.findSession("session-1"))
-                .thenReturn(Optional.of(MultipartSessionSnapshot.from(activeSession(4L))));
+        when(sessionMapper.selectOne(any())).thenReturn(activeSession(4L));
 
         assertThatThrownBy(() -> service.presignPart("session-1", 2, 3L))
                 .isInstanceOf(AccessDeniedException.class);
     }
 
     @Test
-    void returnsCachedProgressForExistingSessionWithoutSessionDatabaseQuery() {
+    void presignsSeveralPartsWithOneSessionDatabaseQuery() {
+        MultipartUploadSession session = activeSession(3L);
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        when(gateway.presignPart(any(), any(), any(Integer.class), any()))
+                .thenAnswer(invocation -> URI.create(
+                        "http://localhost:9000/media?partNumber=" + invocation.getArgument(2)
+                ));
+
+        var result = service.presignParts("session-1", List.of(1, 2), 3L);
+
+        assertThat(result).extracting(PresignedPartView::partNumber)
+                .containsExactly(1, 2);
+        verify(sessionMapper, times(1)).selectOne(any());
+    }
+
+    @Test
+    void returnsCachedProgressAfterVerifyingSessionStateInDatabase() {
         MultipartUploadSession session = activeSession(3L);
         List<CompletedPartRequest> parts = List.of(
                 new CompletedPartRequest(1, "etag-1")
@@ -125,11 +142,12 @@ class MultipartUploadServiceTest {
         when(cache.findSession("session-1"))
                 .thenReturn(Optional.of(MultipartSessionSnapshot.from(session)));
         when(cache.findParts("session-1")).thenReturn(Optional.of(parts));
+        when(sessionMapper.selectOne(any())).thenReturn(session);
 
         var result = service.check(request("session-1"), 3L);
 
         assertThat(result.completedParts()).containsExactlyElementsOf(parts);
-        verify(sessionMapper, never()).selectOne(any());
+        verify(sessionMapper).selectOne(any());
         verify(gateway, never()).listParts(any(), any());
     }
 
@@ -163,6 +181,7 @@ class MultipartUploadServiceTest {
         );
         when(cache.findSession("session-1"))
                 .thenReturn(Optional.of(MultipartSessionSnapshot.from(session)));
+        when(sessionMapper.selectOne(any())).thenReturn(session);
 
         service.recordProgress(
                 "session-1",
@@ -171,7 +190,26 @@ class MultipartUploadServiceTest {
         );
 
         verify(cache).putParts("session-1", parts, session.getExpiresAt());
-        verify(sessionMapper, never()).selectOne(any());
+        verify(sessionMapper).selectOne(any());
+    }
+
+    @Test
+    void rejectsProgressForSessionThatIsTerminalInDatabase() {
+        MultipartUploadSession session = activeSession(3L);
+        session.setStatus(MultipartUploadStatus.ABORTED);
+        when(cache.findSession("session-1"))
+                .thenReturn(Optional.of(MultipartSessionSnapshot.from(activeSession(3L))));
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+
+        assertThatThrownBy(() -> service.recordProgress(
+                "session-1",
+                new MultipartProgressRequest(List.of(
+                        new CompletedPartRequest(1, "etag-1")
+                )),
+                3L
+        )).isInstanceOf(BusinessException.class);
+
+        verify(cache, never()).putParts(any(), any(), any());
     }
 
     private MultipartCheckRequest request() {
