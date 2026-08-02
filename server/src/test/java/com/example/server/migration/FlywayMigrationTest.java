@@ -148,6 +148,121 @@ class FlywayMigrationTest {
     }
 
     @Test
+    void deletingMediaKeepsCompletedUploadSessionAsDetachedAuditRecord() throws Exception {
+        String jdbcUrl = "jdbc:h2:mem:flyway-delete-media;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+        Flyway.configure()
+                .dataSource(jdbcUrl, "sa", "")
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    INSERT INTO users (id, username, password, nickname)
+                    VALUES (1, 'delete-user', 'hash', '删除测试用户')
+                    """);
+            statement.executeUpdate(mediaInsertSql(1, "delete-me.mp4"));
+            statement.executeUpdate("""
+                    INSERT INTO multipart_upload_sessions (
+                        session_id, provider_upload_id, user_id, filename,
+                        content_hash, content_type, size_bytes, bucket_name,
+                        temporary_object_key, total_parts, part_size, status,
+                        media_id, expires_at
+                    ) VALUES (
+                        '00000000-0000-0000-0000-000000000001', 'provider-1', 1, 'delete-me.mp4',
+                        '5d41402abc4b2a76b9719d911017c592', 'video/mp4', 1024, 'media',
+                        'multipart/delete-me', 1, 1024, 'COMPLETED',
+                        1, CURRENT_TIMESTAMP
+                    )
+                    """);
+
+            statement.executeUpdate("DELETE FROM media_files WHERE id = 1");
+
+            try (ResultSet result = statement.executeQuery("""
+                    SELECT media_id
+                    FROM multipart_upload_sessions
+                    WHERE session_id = '00000000-0000-0000-0000-000000000001'
+                    """)) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getObject("media_id")).isNull();
+            }
+        }
+    }
+
+    @Test
+    void deletingAnalyzedMediaCascadesOwnedDerivedDataAndDetachesRawAudit() throws Exception {
+        String jdbcUrl = "jdbc:h2:mem:flyway-delete-analyzed-media;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+        Flyway.configure()
+                .dataSource(jdbcUrl, "sa", "")
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+
+        try (Connection connection = DriverManager.getConnection(jdbcUrl, "sa", "");
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    INSERT INTO users (id, username, password, nickname)
+                    VALUES (1, 'analyzed-user', 'hash', '分析删除测试用户')
+                    """);
+            statement.executeUpdate(mediaInsertSql(1, "analyzed.mp4"));
+            statement.executeUpdate("""
+                    INSERT INTO analysis_tasks (task_id, media_id, user_id, task_type, status)
+                    VALUES ('00000000-0000-0000-0000-000000000002', 1, 1, 'FULL_ANALYSIS', 'SUCCESS')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO analysis_stage_checkpoints (
+                        task_id, media_id, task_type, stage, goal_hash,
+                        input_hash, model_version, status
+                    ) VALUES ('task-2', 1, 'FULL_ANALYSIS', 'ASR', 'goal', 'input', 'model', 'SUCCESS')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO analysis_artifacts (
+                        media_id, artifact_type, stage, content_hash, content_json
+                    ) VALUES (1, 'TRANSCRIPT', 'ASR', 'artifact', '{}')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO model_raw_responses (
+                        task_id, media_id, api_name, stage, model_version,
+                        prompt_hash, response_text, parse_status
+                    ) VALUES ('task-2', 1, 'model-api', 'SUMMARY', 'model', 'prompt', '{}', 'SUCCESS')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO analysis_quality_evaluations (task_id, media_id, evaluator)
+                    VALUES ('task-2', 1, 'quality-v1')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO video_qa_conversations (conversation_id, user_id, media_id, title)
+                    VALUES ('00000000-0000-0000-0000-000000000003', 1, 1, '测试会话')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO video_qa_messages (conversation_id, user_id, media_id, role, content)
+                    VALUES ('00000000-0000-0000-0000-000000000003', 1, 1, 'USER', '问题')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO rag_segments (
+                        user_id, media_id, segment_index, source, content, token_text
+                    ) VALUES (1, 1, 0, 'TRANSCRIPT', '片段', '片段')
+                    """);
+
+            statement.executeUpdate("DELETE FROM media_files WHERE id = 1");
+
+            assertThat(rowCount(statement, "analysis_tasks")).isZero();
+            assertThat(rowCount(statement, "analysis_stage_checkpoints")).isZero();
+            assertThat(rowCount(statement, "analysis_artifacts")).isZero();
+            assertThat(rowCount(statement, "analysis_quality_evaluations")).isZero();
+            assertThat(rowCount(statement, "video_qa_conversations")).isZero();
+            assertThat(rowCount(statement, "video_qa_messages")).isZero();
+            assertThat(rowCount(statement, "rag_segments")).isZero();
+            assertThat(rowCount(statement, "model_raw_responses")).isEqualTo(1);
+            try (ResultSet result = statement.executeQuery("SELECT media_id FROM model_raw_responses")) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getObject("media_id")).isNull();
+            }
+        }
+    }
+
+    @Test
     void canRunMigrationMoreThanOnce() {
         Flyway flyway = Flyway.configure()
                 .dataSource(JDBC_URL, "sa", "")
@@ -187,6 +302,13 @@ class FlywayMigrationTest {
     private void assertThatThrownBySql(SqlOperation operation) {
         org.assertj.core.api.Assertions.assertThatThrownBy(operation::run)
                 .isInstanceOf(SQLException.class);
+    }
+
+    private int rowCount(Statement statement, String tableName) throws SQLException {
+        try (ResultSet result = statement.executeQuery("SELECT COUNT(*) FROM " + tableName)) {
+            result.next();
+            return result.getInt(1);
+        }
     }
 
     @FunctionalInterface
