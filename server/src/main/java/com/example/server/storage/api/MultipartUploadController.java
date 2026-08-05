@@ -72,11 +72,10 @@ public class MultipartUploadController {
     @PostMapping("/media/multipart/{sessionId}/complete")
     public ApiResponse<MediaFile> complete(
             @PathVariable String sessionId,
-            @Valid @RequestBody CompleteMultipartRequest request,
             @AuthenticationPrincipal AuthenticatedUser currentUser
     ) {
         return ApiResponse.success(
-                completionService.complete(sessionId, request, currentUser.userId())
+                completionService.complete(sessionId, currentUser.userId())
         );
     }
 

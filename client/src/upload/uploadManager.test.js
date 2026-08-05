@@ -88,15 +88,9 @@ describe('UploadManager', () => {
       expect.any(AbortSignal)
     )
     expect(transport.reportProgress).toHaveBeenCalledWith('session-1', [
-      { partNumber: 1, etag: 'etag-1' },
-      { partNumber: 2, etag: 'etag-2' },
-      { partNumber: 3, etag: 'etag-3' }
+      1, 2, 3
     ], expect.any(AbortSignal))
-    expect(transport.complete).toHaveBeenCalledWith('session-1', [
-      { partNumber: 1, etag: 'etag-1' },
-      { partNumber: 2, etag: 'etag-2' },
-      { partNumber: 3, etag: 'etag-3' }
-    ], expect.any(AbortSignal))
+    expect(transport.complete).toHaveBeenCalledWith('session-1', expect.any(AbortSignal))
     expect(states).toEqual(expect.arrayContaining([
       UPLOAD_STATES.HASHING,
       UPLOAD_STATES.UPLOADING,
@@ -175,7 +169,7 @@ describe('UploadManager', () => {
     await start
 
     expect(manager.snapshot.state).toBe(UPLOAD_STATES.PAUSED)
-    expect(manager.snapshot.completedParts).toEqual([{ partNumber: 1, etag: 'etag-1' }])
+    expect(manager.snapshot.completedParts).toEqual([1])
     expect(JSON.parse(storage.setItem.mock.calls.at(-1)[1])).toEqual({
       sessionId: 'session-1',
       filename: 'demo.mp4'
@@ -309,10 +303,6 @@ describe('UploadManager', () => {
     }), expect.any(AbortSignal))
     expect(transport.uploadPart.mock.calls.map(([, partNumber]) => partNumber).sort())
       .toEqual([2, 3])
-    expect(transport.complete).toHaveBeenCalledWith('session-1', [
-      { partNumber: 1, etag: 'server-etag-1' },
-      { partNumber: 2, etag: 'etag-2' },
-      { partNumber: 3, etag: 'etag-3' }
-    ], expect.any(AbortSignal))
+    expect(transport.complete).toHaveBeenCalledWith('session-1', expect.any(AbortSignal))
   })
 })

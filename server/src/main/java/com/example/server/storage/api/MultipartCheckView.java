@@ -13,6 +13,6 @@ public record MultipartCheckView(
         long partSize,
         int totalParts,
         LocalDateTime expiresAt,
-        List<CompletedPartRequest> completedParts
+        List<Integer> completedParts
 ) {
 }

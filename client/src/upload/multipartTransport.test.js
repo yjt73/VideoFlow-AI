@@ -9,13 +9,14 @@ describe('MultipartTransport', () => {
     }))
     const directFetch = vi.fn(async () => ({
       ok: true,
-      headers: new Headers({ ETag: '"etag-2"' })
+      headers: new Headers()
     }))
     const transport = new MultipartTransport({ apiFetch, directFetch })
     const blob = new Blob(['part'])
     const controller = new AbortController()
 
-    const etag = await transport.uploadPart('session-1', 2, blob, controller.signal)
+    await expect(transport.uploadPart('session-1', 2, blob, controller.signal))
+      .resolves.toBeUndefined()
 
     expect(apiFetch).toHaveBeenCalledWith(
       '/media/multipart/session-1/parts/2/url',
@@ -25,7 +26,6 @@ describe('MultipartTransport', () => {
       'http://minio.local/media?signature=secret',
       { method: 'PUT', body: blob, signal: controller.signal }
     )
-    expect(etag).toBe('etag-2')
   })
 
   it('按分片号排序完成请求并支持取消及访问地址', async () => {
@@ -36,19 +36,11 @@ describe('MultipartTransport', () => {
     })
     const transport = new MultipartTransport({ apiFetch, directFetch: vi.fn() })
 
-    await transport.complete('session-1', [
-      { partNumber: 3, etag: 'c' },
-      { partNumber: 1, etag: 'a' },
-      { partNumber: 2, etag: 'b' }
-    ])
+    await transport.complete('session-1')
     await transport.abort('session-1')
     await expect(transport.accessUrl(9)).resolves.toBe('http://signed-get')
 
-    expect(JSON.parse(apiFetch.mock.calls[0][1].body).parts).toEqual([
-      { partNumber: 1, etag: 'a' },
-      { partNumber: 2, etag: 'b' },
-      { partNumber: 3, etag: 'c' }
-    ])
+    expect(apiFetch.mock.calls[0][1]).toEqual({ method: 'POST' })
     expect(apiFetch).toHaveBeenCalledWith(
       '/media/multipart/session-1',
       { method: 'DELETE' }
@@ -60,10 +52,7 @@ describe('MultipartTransport', () => {
     const transport = new MultipartTransport({ apiFetch, directFetch: vi.fn() })
     const controller = new AbortController()
 
-    await transport.reportProgress('session-1', [
-      { partNumber: 1, etag: 'etag-1' },
-      { partNumber: 2, etag: 'etag-2' }
-    ], controller.signal)
+    await transport.reportProgress('session-1', [1, 2], controller.signal)
 
     expect(apiFetch).toHaveBeenCalledWith(
       '/media/multipart/session-1/progress',
@@ -71,10 +60,7 @@ describe('MultipartTransport', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          parts: [
-            { partNumber: 1, etag: 'etag-1' },
-            { partNumber: 2, etag: 'etag-2' }
-          ]
+          partNumbers: [1, 2]
         }),
         signal: controller.signal
       }
@@ -123,7 +109,7 @@ describe('MultipartTransport', () => {
       }
       return Promise.resolve({
         ok: true,
-        headers: new Headers({ ETag: '"etag-1"' })
+        headers: new Headers()
       })
     })
     const transport = new MultipartTransport({
@@ -133,7 +119,7 @@ describe('MultipartTransport', () => {
     })
 
     await expect(transport.uploadPart('session-1', 1, new Blob(['part'])))
-      .resolves.toBe('etag-1')
+      .resolves.toBeUndefined()
 
     vi.stubGlobal('fetch', nativeFetch)
   })

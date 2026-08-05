@@ -1,6 +1,5 @@
 package com.example.server.storage.service;
 
-import com.example.server.storage.api.CompletedPartRequest;
 import com.example.server.storage.domain.MultipartUploadStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,16 +56,10 @@ class MultipartUploadSessionCacheTest {
         when(hashOperations.entries("upload:multipart:parts:session-1"))
                 .thenReturn(Map.of("1", "etag-1", "2", "etag-2"));
 
-        cache.putParts("session-1", List.of(
-                new CompletedPartRequest(1, "etag-1"),
-                new CompletedPartRequest(2, "etag-2")
-        ), snapshot().expiresAt());
+        cache.putParts("session-1", List.of(1, 2), snapshot().expiresAt());
 
         assertThat(cache.findParts("session-1")).hasValueSatisfying(parts ->
-                assertThat(parts).containsExactly(
-                        new CompletedPartRequest(1, "etag-1"),
-                        new CompletedPartRequest(2, "etag-2")
-                ));
+                assertThat(parts).containsExactly(1, 2));
     }
 
     @Test

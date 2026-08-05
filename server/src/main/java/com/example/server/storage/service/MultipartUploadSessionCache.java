@@ -1,6 +1,5 @@
 package com.example.server.storage.service;
 
-import com.example.server.storage.api.CompletedPartRequest;
 import com.example.server.storage.domain.MultipartUploadStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,7 +8,6 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -76,7 +74,7 @@ public class MultipartUploadSessionCache {
         }
     }
 
-    public Optional<List<CompletedPartRequest>> findParts(String sessionId) {
+    public Optional<List<Integer>> findParts(String sessionId) {
         try {
             Map<Object, Object> values = redisTemplate.opsForHash().entries(partsKey(sessionId));
             if (values.isEmpty()) {
@@ -85,11 +83,8 @@ public class MultipartUploadSessionCache {
             return Optional.of(values.entrySet()
                     .stream()
                     .filter(entry -> !"__initialized".equals(entry.getKey().toString()))
-                    .map(entry -> new CompletedPartRequest(
-                            Integer.parseInt(entry.getKey().toString()),
-                            entry.getValue().toString()
-                    ))
-                    .sorted(Comparator.comparingInt(CompletedPartRequest::partNumber))
+                    .map(entry -> Integer.parseInt(entry.getKey().toString()))
+                    .sorted()
                     .toList());
         } catch (RuntimeException exception) {
             log.warn("读取分片上传进度缓存失败: sessionId={}, cause={}",
@@ -100,7 +95,7 @@ public class MultipartUploadSessionCache {
 
     public void putParts(
             String sessionId,
-            List<CompletedPartRequest> parts,
+            List<Integer> parts,
             LocalDateTime expiresAt
     ) {
         Duration ttl = ttl(expiresAt);
@@ -111,8 +106,8 @@ public class MultipartUploadSessionCache {
             Map<String, String> values = new HashMap<>();
             values.put("__initialized", "1");
             if (parts != null) {
-                for (CompletedPartRequest part : parts) {
-                    values.put(Integer.toString(part.partNumber()), part.etag());
+                for (Integer partNumber : parts) {
+                    values.put(Integer.toString(partNumber), "1");
                 }
             }
             String key = partsKey(sessionId);

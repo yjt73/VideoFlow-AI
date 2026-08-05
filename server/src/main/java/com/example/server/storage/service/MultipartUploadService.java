@@ -183,21 +183,18 @@ public class MultipartUploadService {
         }
         MultipartSessionSnapshot session = MultipartSessionSnapshot.from(current);
         validateOwnedActiveSession(session, userId);
-        if (request == null || request.parts() == null || request.parts().isEmpty()) {
+        if (request == null || request.partNumbers() == null || request.partNumbers().isEmpty()) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "分片进度不能为空");
         }
-        for (CompletedPartRequest part : request.parts()) {
-            if (part == null
-                    || part.partNumber() < 1
-                    || part.partNumber() > session.totalParts()
-                    || part.etag() == null
-                    || part.etag().isBlank()
-                    || part.etag().length() > 128) {
+        for (Integer partNumber : request.partNumbers()) {
+            if (partNumber == null
+                    || partNumber < 1
+                    || partNumber > session.totalParts()) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "分片进度不合法");
             }
         }
         cache.putSession(session);
-        cache.putParts(sessionId, request.parts(), session.expiresAt());
+        cache.putParts(sessionId, request.partNumbers(), session.expiresAt());
     }
 
     private MultipartCheckView resumeRequestedSession(
@@ -220,7 +217,7 @@ public class MultipartUploadService {
             return null;
         }
         cache.putSession(snapshot);
-        List<CompletedPartRequest> parts = cache.findParts(snapshot.sessionId())
+        List<Integer> parts = cache.findParts(snapshot.sessionId())
                 .orElseGet(() -> rebuildParts(snapshot));
         return uploading(snapshot, parts);
     }
@@ -241,15 +238,15 @@ public class MultipartUploadService {
     private MultipartCheckView resumeFromStorage(MultipartUploadSession session) {
         MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
         cache.putSession(snapshot);
-        List<CompletedPartRequest> parts = rebuildParts(snapshot);
+        List<Integer> parts = rebuildParts(snapshot);
         return uploading(snapshot, parts);
     }
 
-    private List<CompletedPartRequest> rebuildParts(MultipartSessionSnapshot snapshot) {
-        List<CompletedPartRequest> parts = gateway.listParts(
+    private List<Integer> rebuildParts(MultipartSessionSnapshot snapshot) {
+        List<Integer> parts = gateway.listParts(
                 snapshot.temporaryObjectKey(),
                 snapshot.providerUploadId()
-        );
+        ).stream().map(CompletedPartRequest::partNumber).toList();
         cache.putParts(snapshot.sessionId(), parts, snapshot.expiresAt());
         return parts;
     }
@@ -310,7 +307,7 @@ public class MultipartUploadService {
 
     private MultipartCheckView uploading(
             MultipartSessionSnapshot session,
-            List<CompletedPartRequest> completedParts
+            List<Integer> completedParts
     ) {
         return new MultipartCheckView(
                 UploadState.UPLOADING,

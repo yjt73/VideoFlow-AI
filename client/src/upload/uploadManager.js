@@ -79,7 +79,7 @@ export class UploadManager {
       state: this.state,
       sessionId: this.sessionId,
       totalParts: this.totalParts,
-      uploadedChunks: completedParts.map((part) => part.partNumber),
+      uploadedChunks: completedParts,
       completedParts,
       retryCount: this.retryCount,
       hashProgress: this.hashProgress,
@@ -268,14 +268,14 @@ export class UploadManager {
         this.ensureCurrent(version)
         const partNumber = partNumbers[cursor]
         cursor += 1
-        const etag = await this.retryOperation(
+        await this.retryOperation(
           () => this.uploadPart(partNumber, version, signedUrls.get(partNumber)),
           version,
           'uploading'
         )
         this.ensureCurrent(version)
-        this.completedParts.set(partNumber, etag)
-        this.pendingProgress.set(partNumber, etag)
+        this.completedParts.set(partNumber, true)
+        this.pendingProgress.set(partNumber, true)
         this.persistUpload()
         this.updateProgress()
         await this.flushProgress(version)
@@ -313,7 +313,6 @@ export class UploadManager {
         () => this.withController(
           (signal) => this.transport.complete(
             this.sessionId,
-            this.sortedCompletedParts(),
             signal
           ),
           version
@@ -431,12 +430,11 @@ export class UploadManager {
     this.completedParts = new Map()
     if (!Array.isArray(parts)) return
     for (const part of parts) {
-      if (Number.isInteger(part.partNumber)
-        && part.partNumber >= 1
-        && part.partNumber <= this.totalParts
-        && typeof part.etag === 'string'
-        && part.etag) {
-        this.completedParts.set(part.partNumber, part.etag)
+      const partNumber = Number.isInteger(part) ? part : part?.partNumber
+      if (Number.isInteger(partNumber)
+        && partNumber >= 1
+        && partNumber <= this.totalParts) {
+        this.completedParts.set(partNumber, true)
       }
     }
   }
@@ -452,20 +450,18 @@ export class UploadManager {
     }
     if (this.pendingProgress.size === 0) return
 
-    const parts = [...this.pendingProgress.entries()]
-      .map(([partNumber, etag]) => ({ partNumber, etag }))
-      .sort((left, right) => left.partNumber - right.partNumber)
-    for (const part of parts) this.pendingProgress.delete(part.partNumber)
+    const partNumbers = [...this.pendingProgress.keys()].sort((left, right) => left - right)
+    for (const partNumber of partNumbers) this.pendingProgress.delete(partNumber)
 
     this.progressFlushPromise = this.retryOperation(
       () => this.withController(
-        (signal) => this.transport.reportProgress(this.sessionId, parts, signal),
+        (signal) => this.transport.reportProgress(this.sessionId, partNumbers, signal),
         version
       ),
       version,
       'uploading'
     ).catch((error) => {
-      for (const part of parts) this.pendingProgress.set(part.partNumber, part.etag)
+      for (const partNumber of partNumbers) this.pendingProgress.set(partNumber, true)
       throw error
     }).finally(() => {
       this.progressFlushPromise = null
@@ -480,9 +476,7 @@ export class UploadManager {
   }
 
   sortedCompletedParts() {
-    return [...this.completedParts.entries()]
-      .map(([partNumber, etag]) => ({ partNumber, etag }))
-      .sort((left, right) => left.partNumber - right.partNumber)
+    return [...this.completedParts.keys()].sort((left, right) => left - right)
   }
 
   updateProgress() {

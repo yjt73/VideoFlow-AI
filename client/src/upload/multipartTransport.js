@@ -51,34 +51,25 @@ export class MultipartTransport {
       error.status = response.status
       throw error
     }
-    const etag = response.headers.get('etag')?.replaceAll('"', '')
-    if (!etag) {
-      throw new Error('对象存储未返回 ETag')
-    }
-    return etag
   }
 
-  complete(sessionId, parts, signal) {
+  complete(sessionId, signal) {
     return this.apiFetch(
       `/media/multipart/${encodeURIComponent(sessionId)}/complete`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          parts: [...parts].sort((left, right) => left.partNumber - right.partNumber)
-        }),
         ...(signal ? { signal } : {})
       }
     )
   }
 
-  reportProgress(sessionId, parts, signal) {
+  reportProgress(sessionId, partNumbers, signal) {
     return this.apiFetch(
       `/media/multipart/${encodeURIComponent(sessionId)}/progress`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parts }),
+        body: JSON.stringify({ partNumbers }),
         signal
       }
     )

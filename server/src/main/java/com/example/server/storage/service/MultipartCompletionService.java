@@ -5,7 +5,6 @@ import com.example.server.api.BusinessException;
 import com.example.server.api.ErrorCode;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.storage.api.CompleteMultipartRequest;
 import com.example.server.storage.api.CompletedPartRequest;
 import com.example.server.storage.domain.MultipartUploadSession;
 import com.example.server.storage.domain.MultipartUploadStatus;
@@ -54,10 +53,8 @@ public class MultipartCompletionService {
 
     public MediaFile complete(
             String sessionId,
-            CompleteMultipartRequest request,
             Long userId
     ) {
-        validateParts(request);
         MultipartUploadSession session = requireOwnedSession(sessionId, userId);
         if (session.getStatus() == MultipartUploadStatus.COMPLETED) {
             MediaFile media = mediaFileMapper.selectById(session.getMediaId());
@@ -71,17 +68,12 @@ public class MultipartCompletionService {
                 || sessionMapper.claimCompleting(sessionId, userId) != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "上传会话当前无法完成");
         }
-        if (request.parts().size() != session.getTotalParts()) {
-            sessionMapper.restoreInitiated(sessionId);
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "提交的分片数量不完整");
-        }
-
         try {
             List<CompletedPartRequest> actualParts = gateway.listParts(
                     session.getTemporaryObjectKey(),
                     session.getProviderUploadId()
             );
-            validateParts(new CompleteMultipartRequest(actualParts));
+            validateParts(actualParts);
             if (actualParts.size() != session.getTotalParts()) {
                 throw new BusinessException(ErrorCode.BAD_REQUEST, "对象存储中的分片数量不完整");
             }
@@ -200,11 +192,10 @@ public class MultipartCompletionService {
         return session;
     }
 
-    private void validateParts(CompleteMultipartRequest request) {
-        if (request == null || request.parts() == null || request.parts().isEmpty()) {
-            throw new BusinessException(ErrorCode.BAD_REQUEST, "完成上传必须提交分片信息");
+    private void validateParts(List<CompletedPartRequest> parts) {
+        if (parts == null || parts.isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "MinIO 中没有可合并的分片");
         }
-        List<CompletedPartRequest> parts = request.parts();
         for (int index = 0; index < parts.size(); index++) {
             CompletedPartRequest part = parts.get(index);
             if (part == null

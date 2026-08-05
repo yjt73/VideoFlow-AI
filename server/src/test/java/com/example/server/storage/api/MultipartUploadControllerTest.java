@@ -106,17 +106,24 @@ class MultipartUploadControllerTest {
                         .header("Authorization", "Bearer " + tokenFor(3L))
                         .contentType("application/json")
                         .content("""
-                                {"parts":[{"partNumber":1,"etag":"etag-1"}]}
+                                {"partNumbers":[1]}
                                 """))
                 .andExpect(status().isOk());
 
         verify(service).recordProgress(
                 "session-1",
-                new MultipartProgressRequest(java.util.List.of(
-                        new CompletedPartRequest(1, "etag-1")
-                )),
+                new MultipartProgressRequest(java.util.List.of(1)),
                 3L
         );
+    }
+
+    @Test
+    void completesWithoutClientPartManifest() throws Exception {
+        mockMvc.perform(post("/media/multipart/session-1/complete")
+                        .header("Authorization", "Bearer " + tokenFor(3L)))
+                .andExpect(status().isOk());
+
+        verify(completionService).complete("session-1", 3L);
     }
 
     @Test

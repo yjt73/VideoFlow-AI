@@ -133,9 +133,7 @@ class MultipartUploadServiceTest {
     @Test
     void returnsCachedSessionAndProgressWithoutDatabaseQuery() {
         MultipartUploadSession session = activeSession(3L);
-        List<CompletedPartRequest> parts = List.of(
-                new CompletedPartRequest(1, "etag-1")
-        );
+        List<Integer> parts = List.of(1);
         when(mediaReferenceService.findOwnedByHash(3L, request("session-1").contentHash()))
                 .thenReturn(Optional.empty());
         when(storageObjectMapper.selectOne(any())).thenReturn(null);
@@ -153,9 +151,10 @@ class MultipartUploadServiceTest {
     @Test
     void fallsBackToDatabaseAndBackfillsCacheWhenSessionCacheMisses() {
         MultipartUploadSession session = activeSession(3L);
-        List<CompletedPartRequest> parts = List.of(
+        List<CompletedPartRequest> storageParts = List.of(
                 new CompletedPartRequest(1, "etag-1")
         );
+        List<Integer> parts = List.of(1);
         when(mediaReferenceService.findOwnedByHash(3L, request("session-1").contentHash()))
                 .thenReturn(Optional.empty());
         when(storageObjectMapper.selectOne(any())).thenReturn(null);
@@ -165,7 +164,7 @@ class MultipartUploadServiceTest {
         when(gateway.listParts(
                 session.getTemporaryObjectKey(),
                 session.getProviderUploadId()
-        )).thenReturn(parts);
+        )).thenReturn(storageParts);
 
         var result = service.check(request("session-1"), 3L);
 
@@ -178,9 +177,10 @@ class MultipartUploadServiceTest {
     @Test
     void rebuildsProgressFromObjectStorageWhenRedisMisses() {
         MultipartUploadSession session = activeSession(3L);
-        List<CompletedPartRequest> parts = List.of(
+        List<CompletedPartRequest> storageParts = List.of(
                 new CompletedPartRequest(1, "etag-1")
         );
+        List<Integer> parts = List.of(1);
         when(mediaReferenceService.findOwnedByHash(3L, request().contentHash()))
                 .thenReturn(Optional.empty());
         when(storageObjectMapper.selectOne(any())).thenReturn(null);
@@ -188,7 +188,7 @@ class MultipartUploadServiceTest {
         when(gateway.listParts(
                 session.getTemporaryObjectKey(),
                 session.getProviderUploadId()
-        )).thenReturn(parts);
+        )).thenReturn(storageParts);
 
         var result = service.check(request(), 3L);
 
@@ -200,9 +200,7 @@ class MultipartUploadServiceTest {
     @Test
     void recordsCompletedPartsInRedis() {
         MultipartUploadSession session = activeSession(3L);
-        List<CompletedPartRequest> parts = List.of(
-                new CompletedPartRequest(1, "etag-1")
-        );
+        List<Integer> parts = List.of(1);
         when(cache.findSession("session-1"))
                 .thenReturn(Optional.of(MultipartSessionSnapshot.from(session)));
         when(sessionMapper.selectOne(any())).thenReturn(session);
@@ -227,9 +225,7 @@ class MultipartUploadServiceTest {
 
         assertThatThrownBy(() -> service.recordProgress(
                 "session-1",
-                new MultipartProgressRequest(List.of(
-                        new CompletedPartRequest(1, "etag-1")
-                )),
+                new MultipartProgressRequest(List.of(1)),
                 3L
         )).isInstanceOf(BusinessException.class);
 

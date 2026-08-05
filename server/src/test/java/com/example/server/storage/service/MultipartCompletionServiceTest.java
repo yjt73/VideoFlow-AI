@@ -3,7 +3,6 @@ package com.example.server.storage.service;
 import com.example.server.api.BusinessException;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.storage.api.CompleteMultipartRequest;
 import com.example.server.storage.api.CompletedPartRequest;
 import com.example.server.storage.domain.MultipartUploadSession;
 import com.example.server.storage.domain.MultipartUploadStatus;
@@ -55,7 +54,7 @@ class MultipartCompletionServiceTest {
     MultipartCompletionServiceTest() {
         when(sessionMapper.markCompleted(anyString(), anyLong())).thenReturn(1);
         when(sessionMapper.markAborted(anyString())).thenReturn(1);
-        when(gateway.listParts(anyString(), anyString())).thenReturn(validRequest().parts());
+        when(gateway.listParts(anyString(), anyString())).thenReturn(validParts());
     }
 
     @Test
@@ -76,13 +75,13 @@ class MultipartCompletionServiceTest {
         when(mediaReferenceService.createReference(any(StorageObject.class), any(), any()))
                 .thenReturn(media);
 
-        MediaFile result = service.complete("session-1", validRequest(), 3L);
+        MediaFile result = service.complete("session-1", 3L);
 
         ArgumentCaptor<StorageObject> objectCaptor = ArgumentCaptor.forClass(StorageObject.class);
         verify(gateway).complete(
                 session.getTemporaryObjectKey(),
                 session.getProviderUploadId(),
-                validRequest().parts()
+                validParts()
         );
         verify(storageObjectMapper).insert(objectCaptor.capture());
         assertThat(objectCaptor.getValue().getObjectKey())
@@ -95,12 +94,15 @@ class MultipartCompletionServiceTest {
 
     @Test
     void rejectsUnsortedPartsBeforeCallingStorage() {
-        CompleteMultipartRequest request = new CompleteMultipartRequest(List.of(
+        List<CompletedPartRequest> parts = List.of(
                 new CompletedPartRequest(2, "etag-2"),
                 new CompletedPartRequest(1, "etag-1")
-        ));
+        );
+        when(sessionMapper.selectOne(any())).thenReturn(initiatedSession(3L));
+        when(sessionMapper.claimCompleting("session-1", 3L)).thenReturn(1);
+        when(gateway.listParts(anyString(), anyString())).thenReturn(parts);
 
-        assertThatThrownBy(() -> service.complete("session-1", request, 3L))
+        assertThatThrownBy(() -> service.complete("session-1", 3L))
                 .isInstanceOf(BusinessException.class);
         verify(gateway, never()).complete(any(), any(), any());
     }
@@ -128,7 +130,7 @@ class MultipartCompletionServiceTest {
         when(mediaReferenceService.createReference(existing, 3L, "course.mp4"))
                 .thenReturn(media);
 
-        service.complete("session-1", validRequest(), 3L);
+        service.complete("session-1", 3L);
 
         verify(gateway).complete(
                 session.getTemporaryObjectKey(),
@@ -146,7 +148,7 @@ class MultipartCompletionServiceTest {
         when(gateway.open(session.getTemporaryObjectKey()))
                 .thenReturn(new ByteArrayInputStream("hello".getBytes(StandardCharsets.UTF_8)));
 
-        assertThatThrownBy(() -> service.complete("session-1", validRequest(), 3L))
+        assertThatThrownBy(() -> service.complete("session-1", 3L))
                 .isInstanceOf(BusinessException.class);
 
         verify(gateway).delete(session.getTemporaryObjectKey());
@@ -170,7 +172,7 @@ class MultipartCompletionServiceTest {
         when(mediaReferenceService.createReference(existing, 3L, "course.mp4"))
                 .thenReturn(media);
 
-        assertThat(service.complete("session-1", validRequest(), 3L)).isSameAs(media);
+        assertThat(service.complete("session-1", 3L)).isSameAs(media);
     }
 
     @Test
@@ -183,7 +185,7 @@ class MultipartCompletionServiceTest {
         when(sessionMapper.selectOne(any())).thenReturn(session);
         when(mediaFileMapper.selectById(9L)).thenReturn(media);
 
-        assertThat(service.complete("session-1", validRequest(), 3L)).isSameAs(media);
+        assertThat(service.complete("session-1", 3L)).isSameAs(media);
         verify(gateway, never()).complete(any(), any(), any());
     }
 
@@ -223,10 +225,10 @@ class MultipartCompletionServiceTest {
         return session;
     }
 
-    private CompleteMultipartRequest validRequest() {
-        return new CompleteMultipartRequest(List.of(
+    private List<CompletedPartRequest> validParts() {
+        return List.of(
                 new CompletedPartRequest(1, "etag-1"),
                 new CompletedPartRequest(2, "etag-2")
-        ));
+        );
     }
 }
