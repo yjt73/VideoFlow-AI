@@ -208,11 +208,14 @@ public class MultipartUploadService {
         if (request.sessionId() == null || request.sessionId().isBlank()) {
             return null;
         }
-        MultipartUploadSession session = findSession(request.sessionId());
-        if (session == null) {
+        MultipartSessionSnapshot snapshot = cache.findSession(request.sessionId())
+                .orElseGet(() -> {
+                    MultipartUploadSession session = findSession(request.sessionId());
+                    return session == null ? null : MultipartSessionSnapshot.from(session);
+                });
+        if (snapshot == null) {
             return null;
         }
-        MultipartSessionSnapshot snapshot = MultipartSessionSnapshot.from(session);
         if (!matches(snapshot, request, userId, now)) {
             return null;
         }

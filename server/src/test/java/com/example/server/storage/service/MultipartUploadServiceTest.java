@@ -131,7 +131,7 @@ class MultipartUploadServiceTest {
     }
 
     @Test
-    void returnsCachedProgressAfterVerifyingSessionStateInDatabase() {
+    void returnsCachedSessionAndProgressWithoutDatabaseQuery() {
         MultipartUploadSession session = activeSession(3L);
         List<CompletedPartRequest> parts = List.of(
                 new CompletedPartRequest(1, "etag-1")
@@ -142,13 +142,37 @@ class MultipartUploadServiceTest {
         when(cache.findSession("session-1"))
                 .thenReturn(Optional.of(MultipartSessionSnapshot.from(session)));
         when(cache.findParts("session-1")).thenReturn(Optional.of(parts));
+
+        var result = service.check(request("session-1"), 3L);
+
+        assertThat(result.completedParts()).containsExactlyElementsOf(parts);
+        verify(sessionMapper, never()).selectOne(any());
+        verify(gateway, never()).listParts(any(), any());
+    }
+
+    @Test
+    void fallsBackToDatabaseAndBackfillsCacheWhenSessionCacheMisses() {
+        MultipartUploadSession session = activeSession(3L);
+        List<CompletedPartRequest> parts = List.of(
+                new CompletedPartRequest(1, "etag-1")
+        );
+        when(mediaReferenceService.findOwnedByHash(3L, request("session-1").contentHash()))
+                .thenReturn(Optional.empty());
+        when(storageObjectMapper.selectOne(any())).thenReturn(null);
+        when(cache.findSession("session-1")).thenReturn(Optional.empty());
+        when(cache.findParts("session-1")).thenReturn(Optional.empty());
         when(sessionMapper.selectOne(any())).thenReturn(session);
+        when(gateway.listParts(
+                session.getTemporaryObjectKey(),
+                session.getProviderUploadId()
+        )).thenReturn(parts);
 
         var result = service.check(request("session-1"), 3L);
 
         assertThat(result.completedParts()).containsExactlyElementsOf(parts);
         verify(sessionMapper).selectOne(any());
-        verify(gateway, never()).listParts(any(), any());
+        verify(cache).putSession(MultipartSessionSnapshot.from(session));
+        verify(cache).putParts("session-1", parts, session.getExpiresAt());
     }
 
     @Test

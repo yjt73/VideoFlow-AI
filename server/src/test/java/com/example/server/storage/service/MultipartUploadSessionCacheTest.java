@@ -85,7 +85,7 @@ class MultipartUploadSessionCacheTest {
                 "0123456789abcdef0123456789abcdef",
                 "temporary/3/session-1/course.mp4",
                 2,
-                LocalDateTime.of(2026, 8, 3, 12, 0),
+                LocalDateTime.now().plusHours(1),
                 MultipartUploadStatus.INITIATED
         );
     }
