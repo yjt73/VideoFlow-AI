@@ -3,10 +3,10 @@ package com.example.server.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.dao.EmptyResultDataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -17,27 +17,26 @@ public class EmbeddingCacheService {
             new TypeReference<>() {
             };
 
-    private final JdbcTemplate jdbcTemplate;
+    private static final Duration TTL = Duration.ofDays(7);
+
+    private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
     public EmbeddingCacheService(
-            JdbcTemplate jdbcTemplate,
+            StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper
     ) {
-        this.jdbcTemplate = jdbcTemplate;
+        this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
     }
 
     public Optional<List<Double>> find(String text, String modelVersion) {
-        try {
-            String json = jdbcTemplate.queryForObject("""
-                    SELECT embedding_json
-                    FROM embedding_cache
-                    WHERE text_hash = ? AND model_version = ?
-                    """, String.class, Hashing.sha256(text), modelVersion);
-            return Optional.of(objectMapper.readValue(json, EMBEDDING_TYPE));
-        } catch (EmptyResultDataAccessException exception) {
+        String json = redisTemplate.opsForValue().get(key(text, modelVersion));
+        if (json == null) {
             return Optional.empty();
+        }
+        try {
+            return Optional.of(objectMapper.readValue(json, EMBEDDING_TYPE));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Embedding cache JSON cannot be read", exception);
         }
@@ -45,19 +44,17 @@ public class EmbeddingCacheService {
 
     public void save(String text, String modelVersion, List<Double> embedding) {
         try {
-            jdbcTemplate.update("""
-                    INSERT INTO embedding_cache (text_hash, model_version, embedding_json)
-                    VALUES (?, ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                        embedding_json = VALUES(embedding_json),
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    Hashing.sha256(text),
-                    modelVersion,
-                    objectMapper.writeValueAsString(embedding)
+            redisTemplate.opsForValue().set(
+                    key(text, modelVersion),
+                    objectMapper.writeValueAsString(embedding),
+                    TTL
             );
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Embedding cache JSON cannot be written", exception);
         }
+    }
+
+    private String key(String text, String modelVersion) {
+        return "rag:embedding:" + modelVersion + ":" + Hashing.sha256(text);
     }
 }

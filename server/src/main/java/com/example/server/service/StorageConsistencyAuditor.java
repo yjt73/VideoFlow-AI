@@ -1,12 +1,9 @@
 package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.example.server.storage.domain.StorageConsistencyFinding;
-import com.example.server.storage.domain.StorageFindingStatus;
 import com.example.server.storage.domain.StorageFindingType;
 import com.example.server.storage.domain.StorageObject;
 import com.example.server.storage.domain.StorageObjectStatus;
-import com.example.server.storage.persistence.StorageConsistencyFindingMapper;
 import com.example.server.storage.persistence.StorageObjectMapper;
 import com.example.server.service.S3MultipartGateway;
 import org.slf4j.Logger;
@@ -24,18 +21,15 @@ public class StorageConsistencyAuditor {
     private static final Logger log = LoggerFactory.getLogger(StorageConsistencyAuditor.class);
 
     private final StorageObjectMapper storageObjectMapper;
-    private final StorageConsistencyFindingMapper findingMapper;
     private final S3MultipartGateway gateway;
     private final int batchSize;
 
     public StorageConsistencyAuditor(
             StorageObjectMapper storageObjectMapper,
-            StorageConsistencyFindingMapper findingMapper,
             S3MultipartGateway gateway,
             @Value("${storage.audit.batch-size:500}") int batchSize
     ) {
         this.storageObjectMapper = storageObjectMapper;
-        this.findingMapper = findingMapper;
         this.gateway = gateway;
         this.batchSize = batchSize;
     }
@@ -91,37 +85,12 @@ public class StorageConsistencyAuditor {
             Long storageObjectId,
             String details
     ) {
-        LocalDateTime now = LocalDateTime.now();
-        StorageConsistencyFinding existing = findingMapper.selectOne(
-                new LambdaQueryWrapper<StorageConsistencyFinding>()
-                        .eq(StorageConsistencyFinding::getFindingType, type)
-                        .eq(StorageConsistencyFinding::getObjectKey, objectKey)
-                        .last("LIMIT 1")
-        );
-        if (existing == null) {
-            StorageConsistencyFinding finding = new StorageConsistencyFinding();
-            finding.setFindingType(type);
-            finding.setObjectKey(objectKey);
-            finding.setStorageObjectId(storageObjectId);
-            finding.setDetails(details);
-            finding.setStatus(StorageFindingStatus.OPEN);
-            finding.setFirstDetectedAt(now);
-            finding.setLastDetectedAt(now);
-            findingMapper.insert(finding);
-        } else {
-            existing.setStorageObjectId(storageObjectId);
-            existing.setDetails(details);
-            if (existing.getStatus() != StorageFindingStatus.IGNORED) {
-                existing.setStatus(StorageFindingStatus.OPEN);
-            }
-            existing.setLastDetectedAt(now);
-            findingMapper.updateById(existing);
-        }
         log.warn(
-                "event=storage_consistency_finding type={} objectKey={} storageObjectId={}",
+                "event=storage_consistency_finding type={} objectKey={} storageObjectId={} details={}",
                 type,
                 objectKey,
-                storageObjectId
+                storageObjectId,
+                details
         );
     }
 }

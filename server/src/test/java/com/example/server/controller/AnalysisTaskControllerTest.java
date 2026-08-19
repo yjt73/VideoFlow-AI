@@ -13,7 +13,6 @@ import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
 import com.example.server.task.domain.AnalysisTaskStatus;
 import com.example.server.task.domain.AnalysisTaskType;
-import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.service.AnalysisTaskService;
@@ -62,8 +61,6 @@ class AnalysisTaskControllerTest {
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
     private OutboxEventMapper outboxEventMapper;
-    @MockBean
-    private AnalysisTaskFailureMapper analysisTaskFailureMapper;
 
     @Test
     void createsATaskAndReturnsItsGlobalId() throws Exception {

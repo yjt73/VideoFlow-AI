@@ -25,6 +25,10 @@ public class AnalysisTask {
     private String currentStage;
     private String errorCode;
     private String errorMessage;
+    private String failureType;
+    private String failureStackTrace;
+    private String failureRawMessage;
+    private LocalDateTime failureRecordedAt;
     private String resultLocation;
     private String userGoal;
     private Long version;

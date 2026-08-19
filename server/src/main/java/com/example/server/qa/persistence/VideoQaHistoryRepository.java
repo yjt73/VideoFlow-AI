@@ -22,10 +22,14 @@ public class VideoQaHistoryRepository {
 
     public void createConversation(String conversationId, Long userId, Long mediaId, String title) {
         jdbcTemplate.update("""
-                INSERT INTO video_qa_conversations (conversation_id, user_id, media_id, title)
-                VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
-                """, conversationId, userId, mediaId, title);
+                INSERT INTO video_qa_messages
+                    (conversation_id, user_id, media_id, role, content, conversation_title)
+                SELECT ?, ?, ?, 'SYSTEM', ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM video_qa_messages
+                    WHERE conversation_id = ? AND role = 'SYSTEM'
+                )
+                """, conversationId, userId, mediaId, title, title, conversationId);
     }
 
     public void saveMessage(String conversationId,
@@ -37,8 +41,9 @@ public class VideoQaHistoryRepository {
                             List<VideoQaToolResult> toolCalls) {
         jdbcTemplate.update("""
                 INSERT INTO video_qa_messages
-                    (conversation_id, user_id, media_id, role, content, citations_json, tool_calls_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (conversation_id, user_id, media_id, role, content,
+                     citations_json, tool_calls_json, conversation_title)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 conversationId,
                 userId,
@@ -48,11 +53,6 @@ public class VideoQaHistoryRepository {
                 citations == null ? null : write(citations),
                 toolCalls == null ? null : write(toolCalls)
         );
-        jdbcTemplate.update("""
-                UPDATE video_qa_conversations
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE conversation_id = ?
-                """, conversationId);
     }
 
     private String write(Object value) {

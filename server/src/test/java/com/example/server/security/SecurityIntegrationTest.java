@@ -6,7 +6,6 @@ import com.example.server.mapper.UserMapper;
 import com.example.server.service.StorageAccessService;
 import com.example.server.service.StorageReferenceDeletionService;
 import com.example.server.service.ServerSideObjectIngestionService;
-import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.utils.YtDlpUtils;
@@ -70,8 +69,6 @@ class SecurityIntegrationTest {
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
     private OutboxEventMapper outboxEventMapper;
-    @MockBean
-    private AnalysisTaskFailureMapper analysisTaskFailureMapper;
 
     @Test
     void protectedEndpointRejectsAnonymousRequest() throws Exception {

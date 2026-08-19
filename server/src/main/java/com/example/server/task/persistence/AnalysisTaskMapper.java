@@ -13,6 +13,28 @@ public interface AnalysisTaskMapper extends BaseMapper<AnalysisTask> {
 
     @Update("""
             UPDATE analysis_tasks
+            SET failure_type = #{failureType},
+                retry_count = #{retryCount},
+                error_code = #{errorCode},
+                failure_message = #{failureMessage},
+                failure_stack_trace = #{failureStackTrace},
+                failure_raw_message = #{failureRawMessage},
+                failure_recorded_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = #{taskId}
+            """)
+    int recordFailure(
+            @Param("taskId") String taskId,
+            @Param("failureType") String failureType,
+            @Param("retryCount") Integer retryCount,
+            @Param("errorCode") String errorCode,
+            @Param("failureMessage") String failureMessage,
+            @Param("failureStackTrace") String failureStackTrace,
+            @Param("failureRawMessage") String failureRawMessage
+    );
+
+    @Update("""
+            UPDATE analysis_tasks
             SET compensation_count = compensation_count + 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = #{taskId}

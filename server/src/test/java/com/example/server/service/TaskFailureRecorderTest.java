@@ -1,9 +1,7 @@
 package com.example.server.service;
 
-import com.example.server.task.domain.AnalysisTaskFailure;
-import com.example.server.task.persistence.AnalysisTaskFailureMapper;
+import com.example.server.task.persistence.AnalysisTaskMapper;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -13,8 +11,7 @@ class TaskFailureRecorderTest {
 
     @Test
     void storesAReadableFailureHistoryEntry() {
-        AnalysisTaskFailureMapper mapper =
-                mock(AnalysisTaskFailureMapper.class);
+        AnalysisTaskMapper mapper = mock(AnalysisTaskMapper.class);
         TaskFailureRecorder recorder = new TaskFailureRecorder(mapper);
 
         recorder.record(
@@ -26,17 +23,14 @@ class TaskFailureRecorderTest {
                 "{\"taskId\":\"task-1\"}"
         );
 
-        ArgumentCaptor<AnalysisTaskFailure> captor =
-                ArgumentCaptor.forClass(AnalysisTaskFailure.class);
-        verify(mapper).insert(captor.capture());
-        AnalysisTaskFailure failure = captor.getValue();
-        assertThat(failure.getTaskId()).isEqualTo("task-1");
-        assertThat(failure.getFailureType()).isEqualTo("RETRYABLE");
-        assertThat(failure.getRetryCount()).isEqualTo(2);
-        assertThat(failure.getErrorCode()).isEqualTo("AI_TIMEOUT");
-        assertThat(failure.getErrorMessage()).isEqualTo("timeout");
-        assertThat(failure.getStackTrace())
-                .contains("IllegalStateException: timeout");
-        assertThat(failure.getRawMessage()).contains("task-1");
+        verify(mapper).recordFailure(
+                org.mockito.ArgumentMatchers.eq("task-1"),
+                org.mockito.ArgumentMatchers.eq("RETRYABLE"),
+                org.mockito.ArgumentMatchers.eq(2),
+                org.mockito.ArgumentMatchers.eq("AI_TIMEOUT"),
+                org.mockito.ArgumentMatchers.eq("timeout"),
+                org.mockito.ArgumentMatchers.contains("IllegalStateException: timeout"),
+                org.mockito.ArgumentMatchers.contains("task-1")
+        );
     }
 }

@@ -1,7 +1,6 @@
 package com.example.server.service;
 
-import com.example.server.task.domain.AnalysisTaskFailure;
-import com.example.server.task.persistence.AnalysisTaskFailureMapper;
+import com.example.server.task.persistence.AnalysisTaskMapper;
 import org.springframework.stereotype.Service;
 
 import java.io.PrintWriter;
@@ -14,10 +13,10 @@ public class TaskFailureRecorder {
 
     private static final int MAX_STACK_LENGTH = 8000;
 
-    private final AnalysisTaskFailureMapper failureMapper;
+    private final AnalysisTaskMapper taskMapper;
 
-    public TaskFailureRecorder(AnalysisTaskFailureMapper failureMapper) {
-        this.failureMapper = failureMapper;
+    public TaskFailureRecorder(AnalysisTaskMapper taskMapper) {
+        this.taskMapper = taskMapper;
     }
 
     public void record(
@@ -28,16 +27,15 @@ public class TaskFailureRecorder {
             Throwable failure,
             String rawMessage
     ) {
-        AnalysisTaskFailure record = new AnalysisTaskFailure();
-        record.setTaskId(taskId);
-        record.setFailureType(failureType);
-        record.setRetryCount(retryCount);
-        record.setErrorCode(errorCode);
-        record.setErrorMessage(safeMessage(failure));
-        record.setStackTrace(stackTrace(failure));
-        record.setRawMessage(rawMessage);
-        record.setCreatedAt(LocalDateTime.now());
-        failureMapper.insert(record);
+        taskMapper.recordFailure(
+                taskId,
+                failureType,
+                retryCount,
+                errorCode,
+                safeMessage(failure),
+                stackTrace(failure),
+                rawMessage
+        );
     }
 
     private String safeMessage(Throwable failure) {

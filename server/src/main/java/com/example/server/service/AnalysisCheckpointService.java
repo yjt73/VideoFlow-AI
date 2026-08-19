@@ -16,10 +16,17 @@ public class AnalysisCheckpointService {
 
     public void markCompleted(CheckpointKey key, long artifactId, String checksum) {
         jdbcTemplate.update("""
-                INSERT INTO analysis_stage_checkpoints
-                (task_id, media_id, task_type, stage, goal_hash, input_hash,
-                 model_version, artifact_id, artifact_checksum, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED')
+                UPDATE analysis_artifacts
+                SET task_id = ?,
+                    task_type = ?,
+                    checkpoint_stage = ?,
+                    goal_hash = ?,
+                    input_hash = ?,
+                    model_version = ?,
+                    artifact_checksum = ?,
+                    checkpoint_status = 'COMPLETED',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
                 """,
                 key.taskId(),
                 key.mediaId(),
@@ -28,26 +35,26 @@ public class AnalysisCheckpointService {
                 key.goalHash(),
                 key.inputHash(),
                 key.modelVersion(),
-                artifactId,
-                checksum
+                checksum,
+                artifactId
         );
     }
 
     public Optional<Long> findCompletedArtifact(CheckpointKey key) {
         return jdbcTemplate.query("""
-                SELECT artifact_id
-                FROM analysis_stage_checkpoints
+                SELECT id
+                FROM analysis_artifacts
                 WHERE media_id = ?
                   AND task_type = ?
-                  AND stage = ?
+                  AND checkpoint_stage = ?
                   AND goal_hash = ?
                   AND input_hash = ?
                   AND model_version = ?
-                  AND status = 'COMPLETED'
+                  AND checkpoint_status = 'COMPLETED'
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                rs -> rs.next() ? Optional.of(rs.getLong("artifact_id")) : Optional.empty(),
+                rs -> rs.next() ? Optional.of(rs.getLong("id")) : Optional.empty(),
                 key.mediaId(),
                 key.taskType(),
                 key.stage(),

@@ -38,7 +38,9 @@ class FlywayMigrationTest {
             assertThat(indexExists(connection, "media_files", "uk_media_user_content_hash")).isTrue();
             assertThat(tableExists(connection, "analysis_tasks")).isTrue();
             assertThat(tableExists(connection, "outbox_events")).isTrue();
-            assertThat(tableExists(connection, "analysis_task_failures")).isTrue();
+            assertThat(tableExists(connection, "analysis_task_failures")).isFalse();
+            assertThat(columnExists(connection, "analysis_tasks", "failure_type")).isTrue();
+            assertThat(columnExists(connection, "analysis_tasks", "failure_stack_trace")).isTrue();
             assertThat(indexExists(
                     connection,
                     "analysis_tasks",
@@ -85,30 +87,11 @@ class FlywayMigrationTest {
                     "temporary_object_key"
             )).isTrue();
             assertThat(columnExists(connection, "multipart_upload_sessions", "expires_at")).isTrue();
-            assertThat(tableExists(connection, "storage_consistency_findings")).isTrue();
-            assertThat(columnExists(
-                    connection,
-                    "storage_consistency_findings",
-                    "finding_type"
-            )).isTrue();
-            assertThat(columnExists(
-                    connection,
-                    "storage_consistency_findings",
-                    "object_key"
-            )).isTrue();
-            assertThat(columnExists(
-                    connection,
-                    "storage_consistency_findings",
-                    "status"
-            )).isTrue();
+            assertThat(tableExists(connection, "storage_consistency_findings")).isFalse();
             assertThat(columnExists(connection, "media_files", "object_id")).isTrue();
-            assertThat(tableExists(connection, "video_qa_conversations")).isTrue();
+            assertThat(tableExists(connection, "video_qa_conversations")).isFalse();
             assertThat(tableExists(connection, "video_qa_messages")).isTrue();
-            assertThat(constraintExists(
-                    connection,
-                    "video_qa_conversations",
-                    "uk_video_qa_conversation_id"
-            )).isTrue();
+            assertThat(columnExists(connection, "video_qa_messages", "conversation_title")).isTrue();
             assertThat(indexExists(
                     connection,
                     "video_qa_messages",
@@ -116,6 +99,10 @@ class FlywayMigrationTest {
             )).isTrue();
             assertThat(tableExists(connection, "rag_segments")).isTrue();
             assertThat(columnExists(connection, "rag_segments", "embedding_json")).isTrue();
+            assertThat(tableExists(connection, "embedding_cache")).isFalse();
+            assertThat(tableExists(connection, "analysis_stage_checkpoints")).isFalse();
+            assertThat(tableExists(connection, "model_raw_responses")).isFalse();
+            assertThat(tableExists(connection, "analysis_quality_evaluations")).isFalse();
             assertThat(constraintExists(
                     connection,
                     "rag_segments",
@@ -211,29 +198,24 @@ class FlywayMigrationTest {
                     VALUES ('00000000-0000-0000-0000-000000000002', 1, 1, 'FULL_ANALYSIS', 'SUCCESS')
                     """);
             statement.executeUpdate("""
-                    INSERT INTO analysis_stage_checkpoints (
-                        task_id, media_id, task_type, stage, goal_hash,
-                        input_hash, model_version, status
-                    ) VALUES ('task-2', 1, 'FULL_ANALYSIS', 'ASR', 'goal', 'input', 'model', 'SUCCESS')
+                    INSERT INTO analysis_artifacts (
+                        task_id, media_id, artifact_type, stage, content_hash, content_json,
+                        task_type, checkpoint_stage, goal_hash, input_hash, model_version,
+                        checkpoint_status
+                    ) VALUES ('task-2', 1, 'TRANSCRIPT', 'ASR', 'artifact', '{}',
+                              'FULL_ANALYSIS', 'ASR', 'goal', 'input', 'model', 'COMPLETED')
                     """);
             statement.executeUpdate("""
                     INSERT INTO analysis_artifacts (
-                        media_id, artifact_type, stage, content_hash, content_json
-                    ) VALUES (1, 'TRANSCRIPT', 'ASR', 'artifact', '{}')
+                        task_id, media_id, artifact_type, stage, content_hash, content_json,
+                        api_name, model_version, prompt_hash, parse_status
+                    ) VALUES ('task-2', 1, 'MODEL_RAW_RESPONSE', 'SUMMARY', 'raw', '{}',
+                              'model-api', 'model', 'prompt', 'SUCCESS')
                     """);
             statement.executeUpdate("""
-                    INSERT INTO model_raw_responses (
-                        task_id, media_id, api_name, stage, model_version,
-                        prompt_hash, response_text, parse_status
-                    ) VALUES ('task-2', 1, 'model-api', 'SUMMARY', 'model', 'prompt', '{}', 'SUCCESS')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO analysis_quality_evaluations (task_id, media_id, evaluator)
-                    VALUES ('task-2', 1, 'quality-v1')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO video_qa_conversations (conversation_id, user_id, media_id, title)
-                    VALUES ('00000000-0000-0000-0000-000000000003', 1, 1, '测试会话')
+                    INSERT INTO analysis_artifacts (
+                        task_id, media_id, artifact_type, stage, content_hash, content_json
+                    ) VALUES ('task-2', 1, 'QUALITY_EVALUATION', 'QUALITY_REVIEW', 'quality', '{}')
                     """);
             statement.executeUpdate("""
                     INSERT INTO video_qa_messages (conversation_id, user_id, media_id, role, content)
@@ -248,17 +230,9 @@ class FlywayMigrationTest {
             statement.executeUpdate("DELETE FROM media_files WHERE id = 1");
 
             assertThat(rowCount(statement, "analysis_tasks")).isZero();
-            assertThat(rowCount(statement, "analysis_stage_checkpoints")).isZero();
             assertThat(rowCount(statement, "analysis_artifacts")).isZero();
-            assertThat(rowCount(statement, "analysis_quality_evaluations")).isZero();
-            assertThat(rowCount(statement, "video_qa_conversations")).isZero();
             assertThat(rowCount(statement, "video_qa_messages")).isZero();
             assertThat(rowCount(statement, "rag_segments")).isZero();
-            assertThat(rowCount(statement, "model_raw_responses")).isEqualTo(1);
-            try (ResultSet result = statement.executeQuery("SELECT media_id FROM model_raw_responses")) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getObject("media_id")).isNull();
-            }
         }
     }
 

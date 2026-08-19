@@ -12,7 +12,6 @@ import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
 import com.example.server.service.MultipartUploadService;
 import com.example.server.service.MultipartCompletionService;
-import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import org.junit.jupiter.api.Test;
@@ -63,8 +62,6 @@ class MultipartUploadControllerTest {
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
     private OutboxEventMapper outboxEventMapper;
-    @MockBean
-    private AnalysisTaskFailureMapper analysisTaskFailureMapper;
 
     @Test
     void requiresAuthentication() throws Exception {

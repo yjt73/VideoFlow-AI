@@ -23,19 +23,20 @@ public class ModelRawResponseService {
             String parseStatus,
             String errorMessage
     ) {
-        jdbcTemplate.update("""
-                INSERT INTO model_raw_responses
-                (task_id, media_id, api_name, stage, model_version,
-                 prompt_hash, response_text, parse_status, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+            jdbcTemplate.update("""
+                    INSERT INTO analysis_artifacts
+                    (task_id, media_id, artifact_type, stage, content_hash, content_json,
+                     api_name, model_version, prompt_hash, parse_status, error_message)
+                    VALUES (?, ?, 'MODEL_RAW_RESPONSE', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                 taskId,
                 mediaId,
-                apiName,
                 stage,
+                Hashing.sha256(response),
+                response,
+                apiName,
                 modelVersion,
                 Hashing.sha256(prompt),
-                response,
                 parseStatus,
                 errorMessage
         );
