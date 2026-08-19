@@ -13,6 +13,7 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.List;
 
 /** 封装大模型的规划、分块摘要、执行和结果审查调用。 */
@@ -49,6 +50,7 @@ public class DeepSeekUtils {
     public DeepSeekUtils(@Value("${ai.deepseek.api-key}") String apiKey,
                          @Value("${ai.deepseek.base-url}") String baseUrl,
                          @Value("${ai.deepseek.model:deepseek-ai/DeepSeek-R1-Distill-Qwen-32B}") String modelName,
+                         @Value("${ai.deepseek.timeout-seconds:300}") long timeoutSeconds,
                          ObjectMapper objectMapper,
                          StructuredModelOutputParser outputParser,
                          ThirdPartyRetryExecutor retryExecutor,
@@ -57,6 +59,7 @@ public class DeepSeekUtils {
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .modelName(modelName)
+                .timeout(Duration.ofSeconds(timeoutSeconds))
                 .build();
         this.objectMapper = objectMapper;
         this.outputParser = outputParser;

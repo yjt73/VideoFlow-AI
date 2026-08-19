@@ -12,6 +12,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
@@ -54,6 +55,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException exception) {
         return error(ErrorCode.FORBIDDEN, exception.getMessage());
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<ApiResponse<Void>> handleNoResource(NoResourceFoundException exception) {
+        return error(ErrorCode.NOT_FOUND, "接口不存在");
     }
 
     @ExceptionHandler(ResponseStatusException.class)

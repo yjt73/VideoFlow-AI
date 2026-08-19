@@ -88,7 +88,9 @@ public class MultipartCompletionService {
         }
 
         IntegrityResult integrity;
+        //打开合并后的文件并得到文件流
         try (InputStream stream = gateway.open(session.getTemporaryObjectKey())) {
+            //校验文件完整性
             integrity = integrityVerifier.verify(stream);
         } catch (BusinessException exception) {
             cache.evict(sessionId);
@@ -101,6 +103,7 @@ public class MultipartCompletionService {
         }
         if (!session.getContentHash().equals(integrity.md5())
                 || session.getSizeBytes() != integrity.sizeBytes()) {
+            //删除redis缓存进度 + 设置session状态为failed
             cache.evict(sessionId);
             sessionMapper.markFailed(sessionId, "对象完整性校验失败");
             gateway.delete(session.getTemporaryObjectKey());
@@ -113,6 +116,7 @@ public class MultipartCompletionService {
                 userId,
                 session.getFilename()
         );
+        //将session状态设置为完成
         if (sessionMapper.markCompleted(sessionId, media.getId()) != 1) {
             throw new BusinessException(ErrorCode.CONFLICT, "上传完成状态更新失败");
         }

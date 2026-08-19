@@ -3,7 +3,6 @@ package com.example.server.security;
 import com.example.server.controller.MediaController;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
-import com.example.server.service.MediaService;
 import com.example.server.storage.service.StorageAccessService;
 import com.example.server.storage.service.StorageReferenceDeletionService;
 import com.example.server.storage.service.ServerSideObjectIngestionService;
@@ -25,7 +24,6 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
@@ -63,8 +61,6 @@ class SecurityIntegrationTest {
     private YtDlpUtils ytDlpUtils;
 
     @MockBean
-    private MediaService mediaService;
-    @MockBean
     private StorageAccessService storageAccessService;
     @MockBean
     private StorageReferenceDeletionService referenceDeletionService;
@@ -100,18 +96,6 @@ class SecurityIntegrationTest {
                 .andExpect(jsonPath("$.code").value(403))
                 .andExpect(jsonPath("$.requestId").isNotEmpty())
                 .andExpect(jsonPath("$.timestamp").exists());
-    }
-
-    @Test
-    void userCannotCompleteAnotherUsersUpload() throws Exception {
-        doThrow(new AccessDeniedException("forbidden"))
-                .when(mediaService).completeChunkedUpload("other-upload", 1L);
-
-        mockMvc.perform(post("/media/complete-upload")
-                        .param("uploadId", "other-upload")
-                        .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value(403));
     }
 
     private String tokenFor(Long userId) {

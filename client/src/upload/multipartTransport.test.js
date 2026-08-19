@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { MultipartTransport } from './multipartTransport'
 
 describe('MultipartTransport', () => {
-  it('获取签名后直接 PUT Blob 并返回去引号的 ETag', async () => {
+  it('获取签名后直接 PUT Blob，成功不依赖响应 ETag', async () => {
     const apiFetch = vi.fn(async () => ({
       partNumber: 2,
       url: 'http://minio.local/media?signature=secret'

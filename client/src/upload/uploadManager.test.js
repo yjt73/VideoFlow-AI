@@ -40,7 +40,7 @@ const createTransport = (overrides = {}) => ({
       partNumber,
       url: `http://minio.local/part-${partNumber}`
     }))),
-  uploadPart: overrides.uploadPart ?? vi.fn(async (_sessionId, partNumber) => `etag-${partNumber}`),
+  uploadPart: overrides.uploadPart ?? vi.fn(async () => undefined),
   reportProgress: overrides.reportProgress ?? vi.fn(async () => {}),
   complete: overrides.complete ?? vi.fn(async () => completedMedia),
   abort: overrides.abort ?? vi.fn(async () => {}),
@@ -116,7 +116,7 @@ describe('UploadManager', () => {
         maximum = Math.max(maximum, active)
         await new Promise((resolve) => releases.push(resolve))
         active -= 1
-        return `etag-${partNumber}`
+        return undefined
       })
     })
     const { manager } = createManager({ transport })
@@ -131,7 +131,7 @@ describe('UploadManager', () => {
     expect(maximum).toBe(3)
   })
 
-  it('暂停中止当前 PUT，并保留已经完成的 ETag 供恢复使用', async () => {
+  it('暂停中止当前 PUT，并保留已经完成的分片序号供恢复使用', async () => {
     const storage = memoryStorage()
     let releaseSecond
     let serverParts = []
@@ -147,7 +147,7 @@ describe('UploadManager', () => {
         serverParts = [...serverParts, ...parts]
       }),
       uploadPart: vi.fn(async (_sessionId, partNumber, _blob, signal) => {
-        if (partNumber === 1) return 'etag-1'
+        if (partNumber === 1) return undefined
         return new Promise((resolve, reject) => {
           releaseSecond = resolve
           signal.addEventListener('abort', () => reject(
@@ -175,8 +175,8 @@ describe('UploadManager', () => {
       filename: 'demo.mp4'
     })
 
-    transport.uploadPart.mockImplementation(async (_sessionId, partNumber) => `etag-${partNumber}`)
-    releaseSecond?.('etag-2')
+    transport.uploadPart.mockResolvedValue(undefined)
+    releaseSecond?.()
     await manager.resume()
     expect(transport.uploadPart.mock.calls.filter(([, partNumber]) => partNumber === 1))
       .toHaveLength(1)
@@ -221,7 +221,7 @@ describe('UploadManager', () => {
       })),
       uploadPart: vi.fn(async () => {
         if (!recovered) throw Object.assign(new Error('offline'), { status: 503 })
-        return 'etag-1'
+        return undefined
       })
     })
     const { manager } = createManager({ transport, onlineTarget })

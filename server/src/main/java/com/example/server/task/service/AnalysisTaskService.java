@@ -72,6 +72,8 @@ public class AnalysisTaskService {
         if (!Objects.equals(media.getUserId(), userId)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "无权分析他人的媒体");
         }
+
+        //令牌桶限流
         admissionGuard.check();
 
         String normalizedGoal = normalizeGoal(userGoal);

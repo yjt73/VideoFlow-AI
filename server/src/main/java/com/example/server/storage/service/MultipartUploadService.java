@@ -66,12 +66,13 @@ public class MultipartUploadService {
     @Transactional
     public MultipartCheckView check(MultipartCheckRequest request, Long userId) {
         validate(request);
+        //第一种
         Optional<MediaFile> existingMedia =
                 mediaReferenceService.findOwnedByHash(userId, request.contentHash());
         if (existingMedia.isPresent()) {
             return completed(existingMedia.get(), request.totalParts());
         }
-
+        //第二种
         StorageObject existingObject = storageObjectMapper.selectOne(
                 new LambdaQueryWrapper<StorageObject>()
                         .eq(StorageObject::getContentHash, request.contentHash())
@@ -86,13 +87,13 @@ public class MultipartUploadService {
             );
             return completed(media, request.totalParts());
         }
-
+        //第三种
         LocalDateTime now = LocalDateTime.now();
         MultipartCheckView requestedSession = resumeRequestedSession(request, userId, now);
         if (requestedSession != null) {
             return requestedSession;
         }
-
+        //第四种
         MultipartUploadSession resumable = sessionMapper.selectOne(
                 new LambdaQueryWrapper<MultipartUploadSession>()
                         .eq(MultipartUploadSession::getUserId, userId)
@@ -104,7 +105,7 @@ public class MultipartUploadService {
         if (resumable != null) {
             return resumeFromStorage(resumable);
         }
-
+        //第五种
         String sessionId = UUID.randomUUID().toString();
         String objectKey = keyFactory.temporaryKey(userId, sessionId, request.filename());
         String providerUploadId = gateway.create(objectKey, request.contentType());

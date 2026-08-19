@@ -1,8 +1,7 @@
 package com.example.server.controller;
 
-import com.example.server.dto.UploadCheckResponse;
-import com.example.server.dto.UploadState;
 import com.example.server.entity.MediaFile;
+import com.example.server.entity.User;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.UserMapper;
 import com.example.server.security.JwtAuthenticationFilter;
@@ -10,11 +9,10 @@ import com.example.server.security.JwtService;
 import com.example.server.security.RestAccessDeniedHandler;
 import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
-import com.example.server.service.MediaService;
 import com.example.server.storage.api.MediaAccessView;
+import com.example.server.storage.service.ServerSideObjectIngestionService;
 import com.example.server.storage.service.StorageAccessService;
 import com.example.server.storage.service.StorageReferenceDeletionService;
-import com.example.server.storage.service.ServerSideObjectIngestionService;
 import com.example.server.task.persistence.AnalysisTaskFailureMapper;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
@@ -31,17 +29,14 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Set;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.mock;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -73,8 +68,6 @@ class MediaUploadControllerTest {
     @MockBean
     private YtDlpUtils ytDlpUtils;
     @MockBean
-    private MediaService mediaService;
-    @MockBean
     private StorageAccessService storageAccessService;
     @MockBean
     private StorageReferenceDeletionService referenceDeletionService;
@@ -88,87 +81,45 @@ class MediaUploadControllerTest {
     private AnalysisTaskFailureMapper analysisTaskFailureMapper;
 
     @Test
-    void checksUploadForAuthenticatedUser() throws Exception {
-        when(mediaService.checkUpload(any(), eq(1L))).thenReturn(
-                new UploadCheckResponse(UploadState.NEW, "upload-1", Set.of(), false, null)
-        );
+    void legacyChunkUploadEndpointsAreNotExposed() throws Exception {
+        String token = "Bearer " + tokenFor(1L);
 
+        mockMvc.perform(post("/media/init-upload")
+                        .param("filename", "demo.mp4")
+                        .param("fileMd5", "5d41402abc4b2a76b9719d911017c592")
+                        .param("totalChunks", "1")
+                        .header("Authorization", token))
+                .andExpect(status().isNotFound());
         mockMvc.perform(post("/media/check-upload")
                         .contentType("application/json")
-                        .content("""
-                                {
-                                  "filename": "demo.mp4",
-                                  "fileMd5": "5d41402abc4b2a76b9719d911017c592",
-                                  "totalChunks": 3
-                                }
-                                """)
-                        .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.state").value("NEW"))
-                .andExpect(jsonPath("$.data.uploadId").value("upload-1"))
-                .andExpect(jsonPath("$.data.uploadedChunks").isArray())
-                .andExpect(jsonPath("$.data.deduplicated").value(false));
-    }
-
-    @Test
-    void rejectsInvalidFileMd5() throws Exception {
-        mockMvc.perform(post("/media/check-upload")
-                        .contentType("application/json")
-                        .content("""
-                                {
-                                  "filename": "demo.mp4",
-                                  "fileMd5": "invalid",
-                                  "totalChunks": 3
-                                }
-                                """)
-                        .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value(400));
-    }
-
-    @Test
-    void requiresChunkMd5WhenUploadingAChunk() throws Exception {
+                        .content("{}")
+                        .header("Authorization", token))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/media/upload-status")
+                        .param("uploadId", "upload-1")
+                        .header("Authorization", token))
+                .andExpect(status().isNotFound());
         mockMvc.perform(multipart("/media/upload-chunk")
                         .file("file", "hello".getBytes())
-                        .param("uploadId", "550e8400-e29b-41d4-a716-446655440001")
+                        .param("uploadId", "upload-1")
                         .param("chunkIndex", "0")
                         .param("totalChunks", "1")
-                        .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value(400));
-    }
-
-    @Test
-    void completeUploadReturnsThePersistedMedia() throws Exception {
-        MediaFile media = new MediaFile();
-        media.setId(9L);
-        media.setUserId(1L);
-        media.setFilename("demo.mp4");
-        media.setContentHash("5d41402abc4b2a76b9719d911017c592");
-        when(mediaService.completeChunkedUpload("upload-1", 1L)).thenReturn(media);
-
+                        .param("chunkMd5", "5d41402abc4b2a76b9719d911017c592")
+                        .header("Authorization", token))
+                .andExpect(status().isNotFound());
         mockMvc.perform(post("/media/complete-upload")
                         .param("uploadId", "upload-1")
-                        .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.id").value(9))
-                .andExpect(jsonPath("$.data.contentHash")
-                        .value("5d41402abc4b2a76b9719d911017c592"));
-    }
-
-    @Test
-    void authenticatedUserCanCancelOwnUpload() throws Exception {
+                        .header("Authorization", token))
+                .andExpect(status().isNotFound());
         mockMvc.perform(delete("/media/upload")
                         .param("uploadId", "upload-1")
-                        .header("Authorization", "Bearer " + tokenFor(1L)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data").value("上传任务已取消"));
-
-        verify(mediaService).cancelUpload("upload-1", 1L);
+                        .header("Authorization", token))
+                .andExpect(status().isNotFound());
     }
 
     @Test
     void mediaListDoesNotExposeStorageLocation() throws Exception {
+        @SuppressWarnings("unchecked")
         ValueOperations<String, String> values = mock(ValueOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(values);
         when(values.get("media:list:user:1")).thenReturn(null);
@@ -206,7 +157,7 @@ class MediaUploadControllerTest {
     }
 
     private String tokenFor(Long userId) {
-        com.example.server.entity.User user = new com.example.server.entity.User();
+        User user = new User();
         user.setId(userId);
         user.setUsername("user-" + userId);
         user.setRole("USER");

@@ -17,4 +17,5 @@ minio/data/
 
 *.log
 tmp/
+output/
 .worktrees/

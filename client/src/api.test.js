@@ -61,7 +61,7 @@ describe('apiFetch 请求控制', () => {
       requestId: 'request-1'
     }, 503)))
 
-    await expect(apiFetch('/media/check-upload')).rejects.toMatchObject({
+    await expect(apiFetch('/media/multipart/check')).rejects.toMatchObject({
       status: 503,
       code: 503,
       message: 'Redis 暂时不可用',
@@ -76,7 +76,7 @@ describe('apiFetch 请求控制', () => {
       message: '上传会话已过期'
     }, 404)))
 
-    await expect(apiFetch('/media/check-upload')).rejects.toMatchObject({
+    await expect(apiFetch('/media/multipart/check')).rejects.toMatchObject({
       status: 404,
       errorCode: 'UPLOAD_SESSION_EXPIRED'
     })
