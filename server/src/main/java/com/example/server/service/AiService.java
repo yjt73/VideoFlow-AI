@@ -2,23 +2,23 @@ package com.example.server.service;
 
 import com.example.server.dto.AgentState;
 import com.example.server.dto.VideoContext;
-import com.example.server.ai.artifact.AnalysisArtifactService;
-import com.example.server.ai.artifact.AnalysisCheckpointService;
-import com.example.server.ai.artifact.CheckpointKey;
-import com.example.server.ai.artifact.Hashing;
+import com.example.server.service.AnalysisArtifactService;
+import com.example.server.service.AnalysisCheckpointService;
+import com.example.server.service.CheckpointKey;
+import com.example.server.service.Hashing;
 import com.example.server.api.BusinessException;
 import com.example.server.api.ErrorCode;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.strategy.AiAnalysisStrategy;
+import com.example.server.service.AiAnalysisStrategy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import com.example.server.task.service.AiAnalysisResult;
-import com.example.server.storage.service.StorageAccessService;
+import com.example.server.service.AiAnalysisResult;
+import com.example.server.service.StorageAccessService;
 
 @Service
 public class AiService {

@@ -1,11 +1,11 @@
 package com.example.server.controller;
 
-import com.example.server.auth.UserAuthService;
+import com.example.server.service.UserAuthService;
 import com.example.server.api.ApiResponse;
-import com.example.server.auth.dto.LoginRequest;
-import com.example.server.auth.dto.LoginView;
-import com.example.server.auth.dto.RegisterRequest;
-import com.example.server.auth.dto.UserView;
+import com.example.server.dto.LoginRequest;
+import com.example.server.dto.LoginView;
+import com.example.server.dto.RegisterRequest;
+import com.example.server.dto.UserView;
 import com.example.server.security.JwtService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.CrossOrigin;

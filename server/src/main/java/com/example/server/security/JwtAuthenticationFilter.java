@@ -1,6 +1,6 @@
 package com.example.server.security;
 
-import com.example.server.auth.AuthenticatedUser;
+import com.example.server.service.AuthenticatedUser;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

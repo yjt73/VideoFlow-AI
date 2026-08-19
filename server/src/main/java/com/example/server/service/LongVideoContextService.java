@@ -2,7 +2,7 @@ package com.example.server.service;
 
 import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
-import com.example.server.ai.artifact.EmbeddingCacheService;
+import com.example.server.service.EmbeddingCacheService;
 import com.example.server.utils.DeepSeekUtils;
 import com.example.server.utils.EmbeddingUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +27,9 @@ public class LongVideoContextService {
     @Autowired
     private EmbeddingCacheService embeddingCacheService;
 
+    @Autowired
+    private RagKeywordScorer ragKeywordScorer;
+
     public VideoContext selectRelevant(VideoContext context) {
         if (context.segments().isEmpty()
                 || context.segments().get(context.segments().size() - 1).endMs() <= CHUNK_MS) {
@@ -38,7 +41,7 @@ public class LongVideoContextService {
 
         List<VideoContext.VideoSegment> selectedSegments = chunks.stream()
                 .sorted(Comparator.comparingDouble(
-                        (VideoChunk chunk) -> cosine(queryEmbedding, chunk.embedding())
+                        (VideoChunk chunk) -> score(chunk, context.userGoal(), queryEmbedding)
                 ).reversed())
                 .limit(TOP_K)
                 .flatMap(chunk -> chunk.rawSegments().stream())
@@ -58,7 +61,7 @@ public class LongVideoContextService {
                     .toList();
             if (rawSegments.isEmpty()) continue;
 
-            VideoChunk.ChunkSummary summary = deepSeekUtils.summarizeChunk(rawSegments);
+            VideoChunk.ChunkSummary summary = summarizeWithFallback(rawSegments);
             String embeddingText = summary.segmentSummary() + "\n" + String.join(" ", summary.keywords());
             chunks.add(new VideoChunk(
                     start,
@@ -73,13 +76,37 @@ public class LongVideoContextService {
     }
 
     private List<Double> embedCached(String text) {
-        String modelVersion = embeddingUtils.model();
-        return embeddingCacheService.find(text, modelVersion)
-                .orElseGet(() -> {
-                    List<Double> embedding = embeddingUtils.embed(text);
-                    embeddingCacheService.save(text, modelVersion, embedding);
-                    return embedding;
-                });
+        try {
+            String modelVersion = embeddingUtils.model();
+            return embeddingCacheService.find(text, modelVersion)
+                    .orElseGet(() -> {
+                        List<Double> embedding = embeddingUtils.embed(text);
+                        embeddingCacheService.save(text, modelVersion, embedding);
+                        return embedding;
+                    });
+        } catch (RuntimeException ignored) {
+            return List.of();
+        }
+    }
+
+    private VideoChunk.ChunkSummary summarizeWithFallback(
+            List<VideoContext.VideoSegment> segments) {
+        try {
+            return deepSeekUtils.summarizeChunk(segments);
+        } catch (RuntimeException ignored) {
+            String content = segments.stream()
+                    .map(VideoContext.VideoSegment::transcript)
+                    .filter(text -> text != null && !text.isBlank())
+                    .reduce("", (left, right) -> left.isBlank() ? right : left + "\n" + right);
+            return new VideoChunk.ChunkSummary(content, List.of());
+        }
+    }
+
+    private double score(VideoChunk chunk, String goal, List<Double> queryEmbedding) {
+        double vectorScore = cosine(queryEmbedding, chunk.embedding());
+        String searchable = chunk.segmentSummary() + " " + String.join(" ", chunk.keywords());
+        double keywordScore = Math.min(1.0, ragKeywordScorer.score(searchable, goal));
+        return vectorScore * 0.7 + keywordScore * 0.3;
     }
 
     private double cosine(List<Double> left, List<Double> right) {

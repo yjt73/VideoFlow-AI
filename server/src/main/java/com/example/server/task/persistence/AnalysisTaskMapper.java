@@ -2,7 +2,7 @@ package com.example.server.task.persistence;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.example.server.task.domain.AnalysisTask;
-import com.example.server.task.service.TaskProgressUpdate;
+import com.example.server.service.TaskProgressUpdate;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;

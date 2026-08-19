@@ -1,7 +1,7 @@
 package com.example.server.qa.persistence;
 
-import com.example.server.qa.service.VideoQaCitation;
-import com.example.server.qa.service.VideoQaToolResult;
+import com.example.server.service.VideoQaCitation;
+import com.example.server.service.VideoQaToolResult;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.jdbc.core.JdbcTemplate;

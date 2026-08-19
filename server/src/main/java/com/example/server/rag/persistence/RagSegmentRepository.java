@@ -34,6 +34,13 @@ public interface RagSegmentRepository extends BaseMapper<RagSegment> {
                 .eq("media_id", mediaId)) > 0;
     }
 
+    default boolean existsChunkForMedia(Long userId, Long mediaId) {
+        return selectCount(new QueryWrapper<RagSegment>()
+                .eq("user_id", userId)
+                .eq("media_id", mediaId)
+                .eq("source", "VIDEO_CHUNK")) > 0;
+    }
+
     default void deleteByMedia(Long userId, Long mediaId) {
         delete(new QueryWrapper<RagSegment>()
                 .eq("user_id", userId)

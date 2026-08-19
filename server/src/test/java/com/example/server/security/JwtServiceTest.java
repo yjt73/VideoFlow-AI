@@ -1,6 +1,6 @@
 package com.example.server.security;
 
-import com.example.server.auth.AuthenticatedUser;
+import com.example.server.service.AuthenticatedUser;
 import com.example.server.entity.User;
 import io.jsonwebtoken.JwtException;
 import org.junit.jupiter.api.Test;
