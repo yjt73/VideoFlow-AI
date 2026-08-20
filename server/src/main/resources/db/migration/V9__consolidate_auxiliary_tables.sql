@@ -120,10 +120,15 @@ WHERE id IN (
 INSERT INTO analysis_artifacts
     (task_id, media_id, artifact_type, stage, content_hash, content_json,
      api_name, model_version, prompt_hash, parse_status, error_message, created_at)
-SELECT task_id, media_id, 'MODEL_RAW_RESPONSE', stage,
-       'MIGRATED_RAW_RESPONSE', response_text,
-       api_name, model_version, prompt_hash, parse_status, error_message, created_at
-FROM model_raw_responses;
+SELECT raw_response.task_id,
+       COALESCE(raw_response.media_id, task.media_id),
+       'MODEL_RAW_RESPONSE', raw_response.stage,
+       'MIGRATED_RAW_RESPONSE', raw_response.response_text,
+       raw_response.api_name, raw_response.model_version, raw_response.prompt_hash,
+       raw_response.parse_status, raw_response.error_message, raw_response.created_at
+FROM model_raw_responses raw_response
+LEFT JOIN analysis_tasks task ON task.task_id = raw_response.task_id
+WHERE COALESCE(raw_response.media_id, task.media_id) IS NOT NULL;
 
 INSERT INTO analysis_artifacts
     (task_id, media_id, artifact_type, stage, content_hash, content_json, created_at)
@@ -153,10 +158,11 @@ WHERE NOT EXISTS (
       AND message.role = 'SYSTEM'
 );
 
-DROP TABLE analysis_task_failures;
-DROP TABLE analysis_stage_checkpoints;
-DROP TABLE model_raw_responses;
-DROP TABLE embedding_cache;
-DROP TABLE analysis_quality_evaluations;
-DROP TABLE video_qa_conversations;
-DROP TABLE storage_consistency_findings;
+-- 保留旧表作为可回滚归档，应用不再访问这些表。
+ALTER TABLE analysis_task_failures RENAME TO legacy_analysis_task_failures;
+ALTER TABLE analysis_stage_checkpoints RENAME TO legacy_analysis_stage_checkpoints;
+ALTER TABLE model_raw_responses RENAME TO legacy_model_raw_responses;
+ALTER TABLE embedding_cache RENAME TO legacy_embedding_cache;
+ALTER TABLE analysis_quality_evaluations RENAME TO legacy_analysis_quality_evaluations;
+ALTER TABLE video_qa_conversations RENAME TO legacy_video_qa_conversations;
+ALTER TABLE storage_consistency_findings RENAME TO legacy_storage_consistency_findings;

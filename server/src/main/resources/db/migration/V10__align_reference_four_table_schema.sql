@@ -79,11 +79,11 @@ ALTER TABLE media_files
 
 CREATE INDEX idx_media_content_hash ON media_files(content_hash);
 
-DROP TABLE IF EXISTS video_qa_messages;
-DROP TABLE IF EXISTS rag_segments;
-DROP TABLE IF EXISTS analysis_artifacts;
-DROP TABLE IF EXISTS analysis_tasks;
-DROP TABLE IF EXISTS outbox_events;
-DROP TABLE IF EXISTS multipart_upload_sessions;
-DROP TABLE IF EXISTS storage_consistency_findings;
-DROP TABLE IF EXISTS storage_objects;
+-- 保留旧表作为可回滚归档，应用不再访问这些表。
+ALTER TABLE video_qa_messages RENAME TO legacy_video_qa_messages;
+ALTER TABLE rag_segments RENAME TO legacy_rag_segments;
+ALTER TABLE analysis_artifacts RENAME TO legacy_analysis_artifacts;
+ALTER TABLE analysis_tasks RENAME TO legacy_analysis_tasks;
+ALTER TABLE outbox_events RENAME TO legacy_outbox_events;
+ALTER TABLE multipart_upload_sessions RENAME TO legacy_multipart_upload_sessions;
+ALTER TABLE storage_objects RENAME TO legacy_storage_objects;
