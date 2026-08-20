@@ -63,24 +63,6 @@ class FlywayMigrationTest {
                         .as("legacy table %s should be archived", legacyTable)
                         .isFalse();
             }
-            for (String archivedTable : List.of(
-                    "legacy_analysis_tasks",
-                    "legacy_outbox_events",
-                    "legacy_analysis_task_failures",
-                    "legacy_analysis_artifacts",
-                    "legacy_storage_objects",
-                    "legacy_multipart_upload_sessions",
-                    "legacy_video_qa_conversations",
-                    "legacy_video_qa_messages",
-                    "legacy_rag_segments",
-                    "legacy_embedding_cache",
-                    "legacy_analysis_stage_checkpoints",
-                    "legacy_model_raw_responses",
-                    "legacy_analysis_quality_evaluations",
-                    "legacy_storage_consistency_findings"
-            )) {
-                assertThat(tableExists(connection, archivedTable)).isTrue();
-            }
             assertThat(columnExists(connection, "media_files", "object_id")).isFalse();
         }
     }

@@ -158,11 +158,10 @@ WHERE NOT EXISTS (
       AND message.role = 'SYSTEM'
 );
 
--- 保留旧表作为可回滚归档，应用不再访问这些表。
-ALTER TABLE analysis_task_failures RENAME TO legacy_analysis_task_failures;
-ALTER TABLE analysis_stage_checkpoints RENAME TO legacy_analysis_stage_checkpoints;
-ALTER TABLE model_raw_responses RENAME TO legacy_model_raw_responses;
-ALTER TABLE embedding_cache RENAME TO legacy_embedding_cache;
-ALTER TABLE analysis_quality_evaluations RENAME TO legacy_analysis_quality_evaluations;
-ALTER TABLE video_qa_conversations RENAME TO legacy_video_qa_conversations;
-ALTER TABLE storage_consistency_findings RENAME TO legacy_storage_consistency_findings;
+DROP TABLE analysis_task_failures;
+DROP TABLE analysis_stage_checkpoints;
+DROP TABLE model_raw_responses;
+DROP TABLE embedding_cache;
+DROP TABLE analysis_quality_evaluations;
+DROP TABLE video_qa_conversations;
+DROP TABLE storage_consistency_findings;
