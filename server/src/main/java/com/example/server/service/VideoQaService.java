@@ -11,6 +11,7 @@ import com.example.server.dto.VideoQaResponse;
 import com.example.server.utils.DeepSeekUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.access.AccessDeniedException;
@@ -30,8 +31,26 @@ public class VideoQaService {
     private final DeepSeekUtils deepSeekUtils;
     private final ObjectMapper objectMapper;
     private final VideoQaMemoryService memoryService;
-    private final VideoQaHistoryRepository historyRepository;
+    private final AgentCheckpointService checkpointService;
+    private final VideoQaHistoryRepository legacyHistoryRepository;
 
+    @Autowired
+    public VideoQaService(MediaFileMapper mediaFileMapper,
+                          VideoQaToolService toolService,
+                          DeepSeekUtils deepSeekUtils,
+                          ObjectMapper objectMapper,
+                          VideoQaMemoryService memoryService,
+                          AgentCheckpointService checkpointService) {
+        this.mediaFileMapper = mediaFileMapper;
+        this.toolService = toolService;
+        this.deepSeekUtils = deepSeekUtils;
+        this.objectMapper = objectMapper;
+        this.memoryService = memoryService;
+        this.checkpointService = checkpointService;
+        this.legacyHistoryRepository = null;
+    }
+
+    /** 仅保留旧单元测试/外部调用方的构造兼容，不作为默认 Spring 依赖。 */
     public VideoQaService(MediaFileMapper mediaFileMapper,
                           VideoQaToolService toolService,
                           DeepSeekUtils deepSeekUtils,
@@ -43,7 +62,8 @@ public class VideoQaService {
         this.deepSeekUtils = deepSeekUtils;
         this.objectMapper = objectMapper;
         this.memoryService = memoryService;
-        this.historyRepository = historyRepository;
+        this.checkpointService = null;
+        this.legacyHistoryRepository = historyRepository;
     }
 
     public VideoQaResponse answer(Long mediaId, Long userId, VideoQaRequest request) {
@@ -58,8 +78,7 @@ public class VideoQaService {
         String conversationId = request.conversationId() == null || request.conversationId().isBlank()
                 ? UUID.randomUUID().toString()
                 : request.conversationId();
-        createConversationBestEffort(conversationId, userId, mediaId, request.question());
-        List<VideoQaMemoryMessage> history = loadRecentBestEffort(userId, mediaId, conversationId);
+        List<VideoQaMemoryMessage> history = memoryService.loadRecent(userId, mediaId, conversationId);
         List<VideoQaToolResult> toolResults = loadToolResultsBestEffort(mediaFile, mediaId, userId, request.question());
         List<VideoQaCitation> citations = toolResults.stream()
                 .flatMap(result -> result.citations().stream())
@@ -76,8 +95,9 @@ public class VideoQaService {
                     ? "当前视频中没有检索到足够相关的信息。"
                     : citations.get(0).content();
         }
-        saveHistoryBestEffort(conversationId, userId, mediaId, request.question(), answer, citations, toolResults);
         appendMemoryBestEffort(userId, mediaId, conversationId, request.question(), answer);
+        saveLegacyHistoryBestEffort(conversationId, userId, mediaId, request.question(), answer,
+                citations, toolResults);
         return new VideoQaResponse(
                 conversationId,
                 answer,
@@ -91,29 +111,6 @@ public class VideoQaService {
         );
     }
 
-    private void createConversationBestEffort(String conversationId, Long userId, Long mediaId, String question) {
-        try {
-            historyRepository.createConversation(
-                    conversationId,
-                    userId,
-                    mediaId,
-                    question.length() > 50 ? question.substring(0, 50) : question
-            );
-        } catch (RuntimeException exception) {
-            log.warn("event=video_qa_conversation_persist_failed mediaId={} userId={} error={}",
-                    mediaId, userId, exception.getMessage());
-        }
-    }
-
-    private List<VideoQaMemoryMessage> loadRecentBestEffort(Long userId, Long mediaId, String conversationId) {
-        try {
-            return memoryService.loadRecent(userId, mediaId, conversationId);
-        } catch (RuntimeException exception) {
-            log.warn("event=video_qa_memory_load_failed mediaId={} userId={} error={}",
-                    mediaId, userId, exception.getMessage());
-            return List.of();
-        }
-    }
 
     private String answerWithModelOrFallback(String question,
                                              List<VideoQaToolResult> toolResults,
@@ -158,22 +155,6 @@ public class VideoQaService {
         return new VideoQaToolResult(toolName, "tool call failed: " + exception.getMessage(), List.of());
     }
 
-    private void saveHistoryBestEffort(String conversationId,
-                                       Long userId,
-                                       Long mediaId,
-                                       String question,
-                                       String answer,
-                                       List<VideoQaCitation> citations,
-                                       List<VideoQaToolResult> toolResults) {
-        try {
-            historyRepository.saveMessage(conversationId, userId, mediaId, "USER", question, List.of(), List.of());
-            historyRepository.saveMessage(conversationId, userId, mediaId, "ASSISTANT", answer, citations, toolResults);
-        } catch (RuntimeException exception) {
-            log.warn("event=video_qa_history_persist_failed mediaId={} userId={} error={}",
-                    mediaId, userId, exception.getMessage());
-        }
-    }
-
     private void appendMemoryBestEffort(Long userId,
                                         Long mediaId,
                                         String conversationId,
@@ -184,6 +165,24 @@ public class VideoQaService {
         } catch (Throwable exception) {
             log.warn("event=video_qa_memory_append_failed mediaId={} userId={} error={}",
                     mediaId, userId, exception.getMessage());
+        }
+    }
+
+    private void saveLegacyHistoryBestEffort(String conversationId,
+                                             Long userId,
+                                             Long mediaId,
+                                             String question,
+                                             String answer,
+                                             List<VideoQaCitation> citations,
+                                             List<VideoQaToolResult> toolResults) {
+        if (legacyHistoryRepository == null) return;
+        try {
+            legacyHistoryRepository.saveMessage(conversationId, userId, mediaId,
+                    "USER", question, List.of(), List.of());
+            legacyHistoryRepository.saveMessage(conversationId, userId, mediaId,
+                    "ASSISTANT", answer, citations, toolResults);
+        } catch (RuntimeException exception) {
+            log.warn("legacy_video_qa_history_disabled mediaId={}", mediaId, exception);
         }
     }
 

@@ -1,4 +1,14 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: qdrant-media
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant/data:/qdrant/storage
+    networks:
+      - my-network
   # =========================================
   # 1. MySQL (数据库)
   # =========================================

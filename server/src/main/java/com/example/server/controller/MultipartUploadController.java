@@ -19,10 +19,12 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.context.annotation.Profile;
 
 import java.util.List;
 
 @RestController
+@Profile("legacy-persistence")
 public class MultipartUploadController {
 
     private final MultipartUploadService service;

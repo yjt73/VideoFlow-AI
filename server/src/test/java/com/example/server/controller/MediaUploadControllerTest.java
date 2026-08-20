@@ -11,6 +11,10 @@ import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
 import com.example.server.dto.MediaAccessView;
 import com.example.server.service.ServerSideObjectIngestionService;
+import com.example.server.service.AuthService;
+import com.example.server.service.ChunkUploadService;
+import com.example.server.service.MediaIngestService;
+import com.example.server.service.MediaService;
 import com.example.server.service.StorageAccessService;
 import com.example.server.service.StorageReferenceDeletionService;
 import com.example.server.task.persistence.AnalysisTaskMapper;
@@ -21,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.context.TestPropertySource;
@@ -30,6 +35,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -51,6 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "security.jwt.secret=0123456789abcdef0123456789abcdef",
         "security.jwt.expiration-seconds=7200"
 })
+@ActiveProfiles("legacy-persistence")
 class MediaUploadControllerTest {
 
     @Autowired
@@ -65,6 +73,8 @@ class MediaUploadControllerTest {
     @MockBean
     private StringRedisTemplate redisTemplate;
     @MockBean
+    private AuthService authService;
+    @MockBean
     private YtDlpUtils ytDlpUtils;
     @MockBean
     private StorageAccessService storageAccessService;
@@ -76,17 +86,26 @@ class MediaUploadControllerTest {
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
     private OutboxEventMapper outboxEventMapper;
+    @MockBean
+    private ChunkUploadService chunkUploadService;
+    @MockBean
+    private MediaIngestService mediaIngestService;
+    @MockBean
+    private MediaService mediaService;
 
     @Test
-    void legacyChunkUploadEndpointsAreNotExposed() throws Exception {
+    void referenceChunkUploadEndpointsAreAvailable() throws Exception {
         String token = "Bearer " + tokenFor(1L);
+        when(authService.resolveUser(anyString())).thenReturn(1L);
+        when(chunkUploadService.initialize("demo.mp4", 1, 1L)).thenReturn("upload-1");
+        when(chunkUploadService.complete("upload-1", 1L)).thenReturn(new MediaFile());
 
         mockMvc.perform(post("/media/init-upload")
                         .param("filename", "demo.mp4")
                         .param("fileMd5", "5d41402abc4b2a76b9719d911017c592")
                         .param("totalChunks", "1")
                         .header("Authorization", token))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isOk());
         mockMvc.perform(post("/media/check-upload")
                         .contentType("application/json")
                         .content("{}")
@@ -95,7 +114,7 @@ class MediaUploadControllerTest {
         mockMvc.perform(get("/media/upload-status")
                         .param("uploadId", "upload-1")
                         .header("Authorization", token))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isOk());
         mockMvc.perform(multipart("/media/upload-chunk")
                         .file("file", "hello".getBytes())
                         .param("uploadId", "upload-1")
@@ -103,12 +122,12 @@ class MediaUploadControllerTest {
                         .param("totalChunks", "1")
                         .param("chunkMd5", "5d41402abc4b2a76b9719d911017c592")
                         .header("Authorization", token))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isOk());
         mockMvc.perform(post("/media/complete-upload")
                         .param("uploadId", "upload-1")
                         .header("Authorization", token))
-                .andExpect(status().isNotFound());
-        mockMvc.perform(delete("/media/upload")
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/media/not-existing")
                         .param("uploadId", "upload-1")
                         .header("Authorization", token))
                 .andExpect(status().isNotFound());
@@ -139,12 +158,13 @@ class MediaUploadControllerTest {
 
     @Test
     void ownerCanRequestShortLivedAccessUrl() throws Exception {
-        when(storageAccessService.accessUrl(9L, 1L)).thenReturn(
-                new MediaAccessView(
-                        "http://localhost:9000/media/signed",
-                        LocalDateTime.of(2026, 7, 29, 12, 0)
-                )
-        );
+        MediaFile media = new MediaFile();
+        media.setId(9L);
+        media.setUserId(1L);
+        media.setFilePath("media/demo.mp4");
+        when(mediaService.requireOwnedMedia(9L, 1L)).thenReturn(media);
+        when(mediaService.readableSource("media/demo.mp4"))
+                .thenReturn("http://localhost:9000/media/signed");
 
         mockMvc.perform(get("/media/9/access-url")
                         .header("Authorization", "Bearer " + tokenFor(1L)))

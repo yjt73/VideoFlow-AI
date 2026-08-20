@@ -7,11 +7,13 @@ import com.example.server.mapper.MediaFileMapper;
 import com.example.server.storage.persistence.StorageObjectMapper;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Objects;
 
 @Service
+@Profile("legacy-persistence")
 public class StorageReferenceDeletionService {
 
     private final MediaFileMapper mediaFileMapper;

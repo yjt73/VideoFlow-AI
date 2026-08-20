@@ -15,6 +15,7 @@ import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 import java.util.Set;
 
@@ -27,6 +28,7 @@ import static com.example.server.task.domain.AnalysisTaskStatus.RUNNING;
 import static com.example.server.task.domain.AnalysisTaskStatus.SUCCESS;
 
 /** 消费 RocketMQ 死信并保存可人工排查的失败详情。 */
+@Profile("legacy-persistence")
 @Component
 @RocketMQMessageListener(
         topic = "%DLQ%video-analysis-v3-group",

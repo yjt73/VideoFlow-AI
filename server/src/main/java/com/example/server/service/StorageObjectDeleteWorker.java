@@ -6,10 +6,12 @@ import com.example.server.storage.domain.StorageObjectStatus;
 import com.example.server.storage.persistence.StorageObjectMapper;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
+@Profile("legacy-persistence")
 @Component
 public class StorageObjectDeleteWorker {
 

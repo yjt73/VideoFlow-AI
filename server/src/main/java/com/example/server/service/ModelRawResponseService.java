@@ -1,16 +1,14 @@
 package com.example.server.service;
 
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class ModelRawResponseService {
 
-    private final JdbcTemplate jdbcTemplate;
-
-    public ModelRawResponseService(JdbcTemplate jdbcTemplate) {
-        this.jdbcTemplate = jdbcTemplate;
-    }
+    private static final Logger log = LoggerFactory.getLogger(ModelRawResponseService.class);
 
     public void save(
             String taskId,
@@ -23,22 +21,8 @@ public class ModelRawResponseService {
             String parseStatus,
             String errorMessage
     ) {
-            jdbcTemplate.update("""
-                    INSERT INTO analysis_artifacts
-                    (task_id, media_id, artifact_type, stage, content_hash, content_json,
-                     api_name, model_version, prompt_hash, parse_status, error_message)
-                    VALUES (?, ?, 'MODEL_RAW_RESPONSE', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                taskId,
-                mediaId,
-                stage,
-                Hashing.sha256(response),
-                response,
-                apiName,
-                modelVersion,
-                Hashing.sha256(prompt),
-                parseStatus,
-                errorMessage
-        );
+        log.debug("model_response_recorded taskId={} mediaId={} api={} stage={} status={} responseLength={}",
+                taskId, mediaId, apiName, stage, parseStatus,
+                response == null ? 0 : response.length());
     }
 }

@@ -7,7 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class VideoQaToolServiceTest {
 
-    private final VideoQaToolService toolService = new VideoQaToolService(null);
+    private final VideoQaToolService toolService = new VideoQaToolService();
 
     @Test
     void querySubtitleByKeywordReturnsTimestampedCitation() {

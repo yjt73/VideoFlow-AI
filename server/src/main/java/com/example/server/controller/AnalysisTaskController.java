@@ -14,8 +14,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.context.annotation.Profile;
 
 /** 创建和查询全局分析任务。 */
+@Profile("legacy-persistence")
 @RestController
 public class AnalysisTaskController {
 

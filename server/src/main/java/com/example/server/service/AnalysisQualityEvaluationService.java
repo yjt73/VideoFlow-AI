@@ -2,10 +2,12 @@ package com.example.server.service;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
+@Profile("legacy-persistence")
 public class AnalysisQualityEvaluationService {
 
     private final JdbcTemplate jdbcTemplate;

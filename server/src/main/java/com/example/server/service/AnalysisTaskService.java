@@ -15,6 +15,7 @@ import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.service.OutboxEventFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -31,6 +32,7 @@ import static com.example.server.task.domain.AnalysisTaskStatus.RETRYING;
 import static com.example.server.task.domain.AnalysisTaskStatus.RUNNING;
 
 /** 创建和查询当前用户拥有的视频分析任务。 */
+@Profile("legacy-persistence")
 @Service
 public class AnalysisTaskService {
 

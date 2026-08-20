@@ -16,11 +16,13 @@ import com.example.server.task.domain.AnalysisTaskType;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.service.AnalysisTaskService;
+import com.example.server.service.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -44,6 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "security.jwt.secret=0123456789abcdef0123456789abcdef",
         "security.jwt.expiration-seconds=7200"
 })
+@ActiveProfiles("legacy-persistence")
 class AnalysisTaskControllerTest {
 
     @Autowired
@@ -53,6 +56,8 @@ class AnalysisTaskControllerTest {
 
     @MockBean
     private AnalysisTaskService taskService;
+    @MockBean
+    private AuthService authService;
     @MockBean
     private UserMapper userMapper;
     @MockBean

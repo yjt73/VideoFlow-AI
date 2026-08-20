@@ -67,6 +67,18 @@ public class VideoContextService {
         }
     }
 
+    public VideoContext build(String videoPath, String userGoal) {
+        return build(URI.create(videoPath), userGoal);
+    }
+
+    public VideoContext build(String videoPath, String userGoal, String traceId) {
+        return build(videoPath, userGoal);
+    }
+
+    public void deleteEvidenceFrames(VideoContext context) {
+        // 当前实现将帧文件保存在临时目录并在 build 结束时清理，此处保留统一服务契约。
+    }
+
     private List<TranscriptPart> transcribeBySegments(String videoPath, Path audioDir) throws Exception {
         Files.createDirectories(audioDir);
         Path outputPattern = audioDir.resolve("audio_%03d.mp3");

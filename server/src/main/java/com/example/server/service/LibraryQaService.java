@@ -10,6 +10,8 @@ import com.example.server.service.OperationalAlertService;
 import com.example.server.dto.LibraryQaCitationView;
 import com.example.server.dto.LibraryQaRequest;
 import com.example.server.dto.LibraryQaResponse;
+import com.example.server.dto.VideoContext;
+import com.example.server.dto.VideoEvidenceHit;
 import com.example.server.service.RagIndexService;
 import com.example.server.service.RagSearchResult;
 import com.example.server.service.RagSearchService;
@@ -40,6 +42,8 @@ public class LibraryQaService {
     private final ObjectMapper objectMapper;
     private final OperationMetricsService metricsService;
     private final OperationalAlertService alertService;
+    private final AgentCheckpointService checkpointService;
+    private final LongVideoContextService longVideoContextService;
 
     @Autowired
     public LibraryQaService(MediaFileMapper mediaFileMapper,
@@ -48,7 +52,9 @@ public class LibraryQaService {
                             DeepSeekUtils deepSeekUtils,
                             ObjectMapper objectMapper,
                             OperationMetricsService metricsService,
-                            OperationalAlertService alertService) {
+                            OperationalAlertService alertService,
+                            AgentCheckpointService checkpointService,
+                            LongVideoContextService longVideoContextService) {
         this.mediaFileMapper = mediaFileMapper;
         this.ragIndexService = ragIndexService;
         this.ragSearchService = ragSearchService;
@@ -56,6 +62,8 @@ public class LibraryQaService {
         this.objectMapper = objectMapper;
         this.metricsService = metricsService;
         this.alertService = alertService;
+        this.checkpointService = checkpointService;
+        this.longVideoContextService = longVideoContextService;
     }
 
     LibraryQaService(MediaFileMapper mediaFileMapper,
@@ -70,7 +78,9 @@ public class LibraryQaService {
                 deepSeekUtils,
                 objectMapper,
                 new OperationMetricsService(new CompositeMeterRegistry()),
-                new OperationalAlertService()
+                new OperationalAlertService(),
+                null,
+                null
         );
     }
 
@@ -95,6 +105,33 @@ public class LibraryQaService {
             throw new BusinessException(ErrorCode.NOT_FOUND, "没有可问答的视频");
         }
         List<Long> mediaIds = mediaFiles.stream().map(MediaFile::getId).toList();
+        if (checkpointService != null && longVideoContextService != null) {
+            List<MediaEvidence> evidence = mediaIds.stream()
+                    .flatMap(mediaId -> {
+                        var context = checkpointService.loadContext(mediaId);
+                        if (context == null) {
+                            return java.util.stream.Stream.empty();
+                        }
+                        return longVideoContextService.searchEvidence(
+                                        mediaId,
+                                        new VideoContext(context.source(), request.question(), context.segments()))
+                                .stream()
+                                .map(hit -> new MediaEvidence(mediaId, hit));
+                    })
+                    .limit(5)
+                    .toList();
+            List<LibraryQaCitationView> citations = evidence.stream()
+                    .map(item -> new LibraryQaCitationView(
+                            item.mediaId(), null, item.hit().startMs(), item.hit().endMs(),
+                            item.hit().source(), item.hit().snippet()))
+                    .toList();
+            String answer = citations.isEmpty()
+                    ? "当前视频资料库中没有检索到足够相关的片段。"
+                    : deepSeekUtils.answerQuestion(request.question(), toJson(evidence), "[]");
+            String conversationId = request.conversationId() == null || request.conversationId().isBlank()
+                    ? UUID.randomUUID().toString() : request.conversationId();
+            return new LibraryQaResponse(conversationId, answer, citations);
+        }
         mediaIds.forEach(mediaId -> ragIndexService.ensureIndexed(userId, mediaId));
         List<RagSearchResult> searchResults = ragSearchService.search(userId, mediaIds, request.question(), 5);
         List<LibraryQaCitationView> citations = toCitations(searchResults, mediaFiles);
@@ -145,5 +182,8 @@ public class LibraryQaService {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("问答上下文序列化失败", e);
         }
+    }
+
+    private record MediaEvidence(Long mediaId, VideoEvidenceHit hit) {
     }
 }

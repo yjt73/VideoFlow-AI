@@ -6,6 +6,7 @@ import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Set;
@@ -14,6 +15,7 @@ import static com.example.server.task.domain.AnalysisTaskStatus.RUNNING;
 import static com.example.server.task.domain.AnalysisTaskStatus.SUCCESS;
 
 /** 只有任务仍在运行时，才原子提交状态和最终媒体结果。 */
+@Profile("legacy-persistence")
 @Service
 public class AnalysisTaskCompletionService {
 

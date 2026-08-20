@@ -10,6 +10,7 @@ import com.example.server.storage.persistence.StorageObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.io.File;
 import java.io.InputStream;
@@ -18,6 +19,7 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 
 @Service
+@Profile("legacy-persistence")
 public class ServerSideObjectIngestionService {
 
     private final StorageObjectMapper storageObjectMapper;

@@ -2,38 +2,57 @@ package com.example.server.dto;
 
 import java.util.List;
 
-/**
- * 固定 Agent 产物结构，避免模型只返回一段无法继续处理的自由文本。
- */
-/** AI 分析结论及支撑结论的视频证据。 */
+/** 固定 Agent 产物结构，避免模型只返回无法继续处理的自由文本。 */
 public record AnalysisResult(
         String title,
         List<String> conclusions,
         List<Evidence> evidence,
-        List<String> suggestions
+        List<String> suggestions,
+        List<Section> sections
 ) {
+    public AnalysisResult(String title,
+                          List<String> conclusions,
+                          List<Evidence> evidence,
+                          List<String> suggestions) {
+        this(title, conclusions, evidence, suggestions, List.of());
+    }
+
+    public AnalysisResult {
+        title = title == null ? "未命名分析" : title.trim();
+        conclusions = conclusions == null ? List.of() : List.copyOf(conclusions);
+        evidence = evidence == null ? List.of() : List.copyOf(evidence);
+        suggestions = suggestions == null ? List.of() : List.copyOf(suggestions);
+        sections = sections == null ? List.of() : List.copyOf(sections);
+    }
+
     public record Evidence(
             long timestampMs,
             String source,
-            String content
+            String content,
+            String claim
     ) {
+        public Evidence(long timestampMs, String source, String content) {
+            this(timestampMs, source, content, "");
+        }
+
+        public Evidence {
+            if (timestampMs < 0) {
+                throw new IllegalArgumentException("evidence timestamp cannot be negative");
+            }
+            source = source == null ? "UNKNOWN" : source.trim();
+            content = content == null ? "" : content.trim();
+            claim = claim == null ? "" : claim.trim();
+        }
     }
 
-//    ## 篮球比赛 AI 分析报告
-//
-//## 核心结论
-//- 球队A在第二节进攻效率明显下降
-//- 球队B通过快速反击获得更多得分机会
-//- 球队A最后5分钟防守出现明显漏洞
-//
-//## 视频证据
-//- [02:05] camera-1：球队A连续三次失误，被球队B完成快攻得分
-//- [05:02] camera-2：球队B核心球员完成关键三分
-//
-//## 建议
-//- 加强第二节轮换阵容的进攻组织
-//- 增加最后阶段防守沟通训练
-    /** 将结构化分析结果格式化为前端可展示的 Markdown。 */
+    public record Section(String key, String title, List<String> items) {
+        public Section {
+            key = key == null ? "" : key.trim();
+            title = title == null ? "" : title.trim();
+            items = items == null ? List.of() : List.copyOf(items);
+        }
+    }
+
     public String toMarkdown() {
         StringBuilder result = new StringBuilder("## ").append(title).append("\n\n## 核心结论\n");
         if (conclusions != null) {
@@ -52,6 +71,10 @@ public record AnalysisResult(
         result.append("\n## 建议\n");
         if (suggestions != null) {
             suggestions.forEach(item -> result.append("- ").append(item).append('\n'));
+        }
+        for (Section section : sections) {
+            result.append("\n## ").append(section.title()).append('\n');
+            section.items().forEach(item -> result.append("- ").append(item).append('\n'));
         }
         return result.toString();
     }

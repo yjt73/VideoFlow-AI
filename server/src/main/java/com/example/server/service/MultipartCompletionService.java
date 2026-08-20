@@ -15,11 +15,13 @@ import com.example.server.storage.persistence.StorageObjectMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.io.InputStream;
 import java.util.List;
 
 @Service
+@Profile("legacy-persistence")
 public class MultipartCompletionService {
 
     private final MultipartUploadSessionMapper sessionMapper;

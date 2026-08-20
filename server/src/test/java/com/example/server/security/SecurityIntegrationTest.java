@@ -6,6 +6,10 @@ import com.example.server.mapper.UserMapper;
 import com.example.server.service.StorageAccessService;
 import com.example.server.service.StorageReferenceDeletionService;
 import com.example.server.service.ServerSideObjectIngestionService;
+import com.example.server.service.AuthService;
+import com.example.server.service.ChunkUploadService;
+import com.example.server.service.MediaIngestService;
+import com.example.server.service.MediaService;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import com.example.server.utils.YtDlpUtils;
@@ -21,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -54,6 +59,8 @@ class SecurityIntegrationTest {
 
     @MockBean
     private StringRedisTemplate redisTemplate;
+    @MockBean
+    private AuthService authService;
 
 
     @MockBean
@@ -69,6 +76,12 @@ class SecurityIntegrationTest {
     private AnalysisTaskMapper analysisTaskMapper;
     @MockBean
     private OutboxEventMapper outboxEventMapper;
+    @MockBean
+    private ChunkUploadService chunkUploadService;
+    @MockBean
+    private MediaIngestService mediaIngestService;
+    @MockBean
+    private MediaService mediaService;
 
     @Test
     void protectedEndpointRejectsAnonymousRequest() throws Exception {
@@ -82,8 +95,9 @@ class SecurityIntegrationTest {
 
     @Test
     void userCannotDeleteAnotherUsersMedia() throws Exception {
+        when(authService.resolveUser(anyString())).thenReturn(1L);
         doThrow(new AccessDeniedException("无权删除他人的媒体"))
-                .when(referenceDeletionService)
+                .when(mediaService)
                 .deleteOwnedMedia(99L, 1L);
 
         mockMvc.perform(delete("/media/delete")

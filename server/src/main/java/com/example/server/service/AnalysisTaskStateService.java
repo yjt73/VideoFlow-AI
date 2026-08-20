@@ -6,10 +6,12 @@ import com.example.server.task.domain.AnalysisTaskStateMachine;
 import com.example.server.task.domain.AnalysisTaskStatus;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.util.Set;
 
 /** 通过数据库条件更新安全推进分析任务状态。 */
+@Profile("legacy-persistence")
 @Service
 public class AnalysisTaskStateService {
 

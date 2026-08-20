@@ -1,126 +1,140 @@
 package com.example.server.service;
 
+import com.example.server.dto.AgentState;
 import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
-import com.example.server.service.EmbeddingCacheService;
-import com.example.server.utils.DeepSeekUtils;
-import com.example.server.utils.EmbeddingUtils;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.example.server.dto.VideoEvidenceHit;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class LongVideoContextService {
 
     private static final long CHUNK_MS = 5 * 60 * 1000L;
-    private static final int TOP_K = 3;
+    private static final int MAX_CONTEXT_CHARS = 24_000;
 
-    @Autowired
-    private DeepSeekUtils deepSeekUtils;
+    private final AgentTelemetry telemetry;
+    private final AgentCheckpointService checkpointService;
+    private final VideoChunkingService chunkingService;
+    private final VideoEvidenceRetrievalService retrievalService;
 
-    @Autowired
-    private EmbeddingUtils embeddingUtils;
-
-    @Autowired
-    private EmbeddingCacheService embeddingCacheService;
-
-    @Autowired
-    private RagKeywordScorer ragKeywordScorer;
+    public LongVideoContextService(AgentTelemetry telemetry,
+                                   AgentCheckpointService checkpointService,
+                                   VideoChunkingService chunkingService,
+                                   VideoEvidenceRetrievalService retrievalService) {
+        this.telemetry = telemetry;
+        this.checkpointService = checkpointService;
+        this.chunkingService = chunkingService;
+        this.retrievalService = retrievalService;
+    }
 
     public VideoContext selectRelevant(VideoContext context) {
+        return selectRelevant(null, context);
+    }
+
+    public VideoContext selectRelevant(Long mediaId, VideoContext context) {
         if (context.segments().isEmpty()
                 || context.segments().get(context.segments().size() - 1).endMs() <= CHUNK_MS) {
-            return context;
+            return withinBudget(context, context.segments());
         }
 
-        List<VideoChunk> chunks = buildChunks(context.segments());
-        List<Double> queryEmbedding = embedCached(context.userGoal());
-
-        List<VideoContext.VideoSegment> selectedSegments = chunks.stream()
-                .sorted(Comparator.comparingDouble(
-                        (VideoChunk chunk) -> score(chunk, context.userGoal(), queryEmbedding)
-                ).reversed())
-                .limit(TOP_K)
-                .flatMap(chunk -> chunk.rawSegments().stream())
-                .sorted(Comparator.comparingLong(VideoContext.VideoSegment::startMs))
-                .toList();
-
-        return new VideoContext(context.source(), context.userGoal(), selectedSegments);
+        List<VideoChunk> chunks = resolveChunks(mediaId, context.segments());
+        List<VideoContext.VideoSegment> selectedSegments =
+                retrievalService.retrieve(mediaId, context.userGoal(), chunks).stream()
+                        .flatMap(hit -> chunks.stream()
+                                .filter(chunk -> chunk.startTime() == hit.startMs()
+                                        && chunk.endTime() == hit.endMs())
+                                .flatMap(chunk -> chunk.rawSegments().stream()))
+                        .distinct()
+                        .sorted(Comparator.comparingLong(VideoContext.VideoSegment::startMs))
+                        .toList();
+        if (selectedSegments.isEmpty()) {
+            selectedSegments = chunks.stream()
+                    .flatMap(chunk -> chunk.rawSegments().stream())
+                    .toList();
+        }
+        return withinBudget(context, selectedSegments);
     }
 
-    private List<VideoChunk> buildChunks(List<VideoContext.VideoSegment> segments) {
-        List<VideoChunk> chunks = new ArrayList<>();
-        for (long start = 0; start <= segments.get(segments.size() - 1).startMs(); start += CHUNK_MS) {
-            long end = start + CHUNK_MS;
-            long chunkStart = start;
-            List<VideoContext.VideoSegment> rawSegments = segments.stream()
-                    .filter(segment -> segment.startMs() >= chunkStart && segment.startMs() < end)
-                    .toList();
-            if (rawSegments.isEmpty()) continue;
+    public List<VideoEvidenceHit> searchEvidence(Long mediaId, VideoContext context) {
+        if (context.segments().isEmpty()) return List.of();
+        List<VideoChunk> chunks = resolveChunks(mediaId, context.segments());
+        return retrievalService.search(mediaId, context.userGoal(), chunks);
+    }
 
-            VideoChunk.ChunkSummary summary = summarizeWithFallback(rawSegments);
-            String embeddingText = summary.segmentSummary() + "\n" + String.join(" ", summary.keywords());
-            chunks.add(new VideoChunk(
-                    start,
-                    end,
-                    summary.segmentSummary(),
-                    summary.keywords(),
-                    rawSegments,
-                    embedCached(embeddingText)
-            ));
+    public VideoContext refineForCritique(Long mediaId,
+                                          VideoContext fullContext,
+                                          VideoContext selectedContext,
+                                          AgentState.CriticResult critique) {
+        Map<String, VideoContext.VideoSegment> segments = new LinkedHashMap<>();
+        List<Long> requiredTimestamps = critique == null ? List.of() : critique.requiredTimestamps();
+        fullContext.segments().stream()
+                .filter(segment -> requiredTimestamps.stream().anyMatch(timestamp ->
+                        nearSegment(timestamp, segment)))
+                .forEach(segment -> segments.put(segmentKey(segment), segment));
+
+        String critiqueQuery = critiqueQuery(fullContext.userGoal(), critique);
+        VideoContext retryContext = selectRelevant(mediaId,
+                new VideoContext(fullContext.source(), critiqueQuery, fullContext.segments()));
+        retryContext.segments().forEach(segment -> segments.putIfAbsent(segmentKey(segment), segment));
+        selectedContext.segments().forEach(segment -> segments.putIfAbsent(segmentKey(segment), segment));
+        return withinBudget(fullContext, new ArrayList<>(segments.values()));
+    }
+
+    private String critiqueQuery(String goal, AgentState.CriticResult critique) {
+        if (critique == null) return goal;
+        return String.join("\n",
+                goal,
+                String.join(" ", critique.feedback()),
+                String.join(" ", critique.missingRequirements()),
+                String.join(" ", critique.unsupportedClaims()));
+    }
+
+    private String segmentKey(VideoContext.VideoSegment segment) {
+        return segment.startMs() + ":" + segment.endMs();
+    }
+
+    private VideoContext withinBudget(VideoContext context,
+                                      List<VideoContext.VideoSegment> candidates) {
+        List<VideoContext.VideoSegment> selected = new ArrayList<>();
+        int usedChars = 0;
+        for (VideoContext.VideoSegment segment : candidates) {
+            int segmentChars = segment.transcript().length()
+                    + segment.ocrTexts().stream().mapToInt(String::length).sum();
+            if (!selected.isEmpty() && usedChars + segmentChars > MAX_CONTEXT_CHARS) continue;
+            selected.add(segment);
+            usedChars += segmentChars;
+        }
+        telemetry.incrementCurrent("contextSegmentsDropped", candidates.size() - selected.size());
+        telemetry.valueCurrent("contextChars", usedChars);
+        selected.sort(Comparator.comparingLong(VideoContext.VideoSegment::startMs));
+        return new VideoContext(context.source(), context.userGoal(), selected);
+    }
+
+    private boolean nearSegment(long timestamp, VideoContext.VideoSegment segment) {
+        long margin = Math.max(60_000L, segment.endMs() - segment.startMs());
+        return timestamp >= Math.max(0, segment.startMs() - margin)
+                && timestamp < segment.endMs() + margin;
+    }
+
+    private List<VideoChunk> resolveChunks(Long mediaId,
+                                           List<VideoContext.VideoSegment> segments) {
+        List<VideoChunk> chunks = mediaId == null ? null : checkpointService.loadChunks(mediaId);
+        if (chunks != null && !chunks.isEmpty()) {
+            telemetry.incrementCurrent("chunkCheckpointHits", 1);
+            return chunks;
+        }
+
+        chunks = chunkingService.build(segments);
+        if (mediaId != null) {
+            checkpointService.saveChunks(mediaId, chunks);
+            retrievalService.index(mediaId, chunks);
         }
         return chunks;
-    }
-
-    private List<Double> embedCached(String text) {
-        try {
-            String modelVersion = embeddingUtils.model();
-            return embeddingCacheService.find(text, modelVersion)
-                    .orElseGet(() -> {
-                        List<Double> embedding = embeddingUtils.embed(text);
-                        embeddingCacheService.save(text, modelVersion, embedding);
-                        return embedding;
-                    });
-        } catch (RuntimeException ignored) {
-            return List.of();
-        }
-    }
-
-    private VideoChunk.ChunkSummary summarizeWithFallback(
-            List<VideoContext.VideoSegment> segments) {
-        try {
-            return deepSeekUtils.summarizeChunk(segments);
-        } catch (RuntimeException ignored) {
-            String content = segments.stream()
-                    .map(VideoContext.VideoSegment::transcript)
-                    .filter(text -> text != null && !text.isBlank())
-                    .reduce("", (left, right) -> left.isBlank() ? right : left + "\n" + right);
-            return new VideoChunk.ChunkSummary(content, List.of());
-        }
-    }
-
-    private double score(VideoChunk chunk, String goal, List<Double> queryEmbedding) {
-        double vectorScore = cosine(queryEmbedding, chunk.embedding());
-        String searchable = chunk.segmentSummary() + " " + String.join(" ", chunk.keywords());
-        double keywordScore = Math.min(1.0, ragKeywordScorer.score(searchable, goal));
-        return vectorScore * 0.7 + keywordScore * 0.3;
-    }
-
-    private double cosine(List<Double> left, List<Double> right) {
-        if (left.size() != right.size() || left.isEmpty()) return 0;
-
-        double dot = 0;
-        double leftLength = 0;
-        double rightLength = 0;
-        for (int i = 0; i < left.size(); i++) {
-            dot += left.get(i) * right.get(i);
-            leftLength += left.get(i) * left.get(i);
-            rightLength += right.get(i) * right.get(i);
-        }
-        if (leftLength == 0 || rightLength == 0) return 0;
-        return dot / (Math.sqrt(leftLength) * Math.sqrt(rightLength));
     }
 }

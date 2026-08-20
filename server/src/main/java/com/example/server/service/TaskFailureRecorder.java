@@ -2,12 +2,14 @@ package com.example.server.service;
 
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.time.LocalDateTime;
 
 /** 将每次分析失败写入审计表，便于定位和后续补偿。 */
+@Profile("legacy-persistence")
 @Service
 public class TaskFailureRecorder {
 

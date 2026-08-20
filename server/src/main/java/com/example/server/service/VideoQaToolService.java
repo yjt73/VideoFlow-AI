@@ -2,8 +2,6 @@ package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.server.entity.MediaFile;
-import com.example.server.task.domain.AnalysisTask;
-import com.example.server.task.persistence.AnalysisTaskMapper;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -21,10 +19,7 @@ public class VideoQaToolService {
             "^\\s*\\[(\\d{2}):(\\d{2}):(\\d{2})]\\s*(.+)$|^\\s*\\[(\\d{2}):(\\d{2})]\\s*(.+)$"
     );
 
-    private final AnalysisTaskMapper analysisTaskMapper;
-
-    public VideoQaToolService(AnalysisTaskMapper analysisTaskMapper) {
-        this.analysisTaskMapper = analysisTaskMapper;
+    public VideoQaToolService() {
     }
 
     public VideoQaToolResult querySubtitleByKeyword(MediaFile mediaFile, String question) {
@@ -64,22 +59,7 @@ public class VideoQaToolService {
     }
 
     public VideoQaToolResult queryTaskStatus(Long mediaId, Long userId) {
-        if (analysisTaskMapper == null) {
-            return new VideoQaToolResult("query_task_status", "任务状态暂不可用", List.of());
-        }
-        AnalysisTask task = analysisTaskMapper.selectOne(new QueryWrapper<AnalysisTask>()
-                .eq("media_id", mediaId)
-                .eq("user_id", userId)
-                .orderByDesc("created_at")
-                .last("LIMIT 1"));
-        if (task == null) {
-            return new VideoQaToolResult("query_task_status", "暂无分析任务", List.of());
-        }
-        return new VideoQaToolResult(
-                "query_task_status",
-                "最近任务状态：" + task.getStatus() + "，阶段：" + task.getCurrentStage(),
-                List.of()
-        );
+        return new VideoQaToolResult("query_task_status", "任务状态请通过 Agent 分析状态接口查询", List.of());
     }
 
     private VideoQaCitation toCitation(String line, String source) {

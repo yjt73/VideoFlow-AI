@@ -20,6 +20,7 @@ import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +35,7 @@ import static com.example.server.task.domain.AnalysisTaskStatus.RUNNING;
 import static com.example.server.task.domain.AnalysisTaskStatus.SUCCESS;
 
 /** 同步执行单个分析任务，让异常能够正确触发 RocketMQ 重试。 */
+@Profile("legacy-persistence")
 @Component
 @RocketMQMessageListener(
         topic = "video-analysis-topic",

@@ -35,84 +35,40 @@ class FlywayMigrationTest {
             assertThat(constraintExists(connection, "users", "uk_users_username")).isTrue();
             assertThat(indexExists(connection, "media_files", "idx_media_user_upload_time")).isTrue();
             assertThat(columnExists(connection, "media_files", "content_hash")).isTrue();
-            assertThat(indexExists(connection, "media_files", "uk_media_user_content_hash")).isTrue();
-            assertThat(tableExists(connection, "analysis_tasks")).isTrue();
-            assertThat(tableExists(connection, "outbox_events")).isTrue();
-            assertThat(tableExists(connection, "analysis_task_failures")).isFalse();
-            assertThat(columnExists(connection, "analysis_tasks", "failure_type")).isTrue();
-            assertThat(columnExists(connection, "analysis_tasks", "failure_stack_trace")).isTrue();
-            assertThat(indexExists(
-                    connection,
+            assertThat(indexExists(connection, "media_files", "idx_media_content_hash")).isTrue();
+            assertThat(tableExists(connection, "agent_checkpoints")).isTrue();
+            assertThat(columnExists(connection, "agent_checkpoints", "payload")).isTrue();
+            assertThat(indexExists(connection, "agent_checkpoints", "idx_agent_checkpoint_updated")).isTrue();
+            assertThat(tableExists(connection, "failed_analysis_tasks")).isTrue();
+            assertThat(columnExists(connection, "failed_analysis_tasks", "mode")).isTrue();
+            assertThat(indexExists(connection, "failed_analysis_tasks", "idx_failed_analysis_media")).isTrue();
+
+            for (String legacyTable : List.of(
                     "analysis_tasks",
-                    "uk_analysis_tasks_task_id"
-            )).isTrue();
-            assertThat(indexExists(
-                    connection,
-                    "analysis_tasks",
-                    "idx_analysis_tasks_status_created"
-            )).isTrue();
-            assertThat(indexExists(
-                    connection,
-                    "analysis_tasks",
-                    "idx_analysis_tasks_media_type"
-            )).isTrue();
-            assertThat(indexExists(
-                    connection,
                     "outbox_events",
-                    "uk_outbox_aggregate_event"
-            )).isTrue();
-            assertThat(tableExists(connection, "storage_objects")).isTrue();
-            assertThat(columnExists(connection, "storage_objects", "content_hash")).isTrue();
-            assertThat(columnExists(connection, "storage_objects", "reference_count")).isTrue();
-            assertThat(columnExists(connection, "storage_objects", "status")).isTrue();
-            assertThat(constraintExists(
-                    connection,
+                    "analysis_task_failures",
+                    "analysis_artifacts",
                     "storage_objects",
-                    "uk_storage_objects_hash"
-            )).isTrue();
-            assertThat(constraintExists(
-                    connection,
-                    "storage_objects",
-                    "uk_storage_objects_location"
-            )).isTrue();
-            assertThat(tableExists(connection, "multipart_upload_sessions")).isTrue();
-            assertThat(columnExists(
-                    connection,
                     "multipart_upload_sessions",
-                    "provider_upload_id"
-            )).isTrue();
-            assertThat(columnExists(
-                    connection,
-                    "multipart_upload_sessions",
-                    "temporary_object_key"
-            )).isTrue();
-            assertThat(columnExists(connection, "multipart_upload_sessions", "expires_at")).isTrue();
-            assertThat(tableExists(connection, "storage_consistency_findings")).isFalse();
-            assertThat(columnExists(connection, "media_files", "object_id")).isTrue();
-            assertThat(tableExists(connection, "video_qa_conversations")).isFalse();
-            assertThat(tableExists(connection, "video_qa_messages")).isTrue();
-            assertThat(columnExists(connection, "video_qa_messages", "conversation_title")).isTrue();
-            assertThat(indexExists(
-                    connection,
+                    "video_qa_conversations",
                     "video_qa_messages",
-                    "idx_video_qa_messages_conversation_created"
-            )).isTrue();
-            assertThat(tableExists(connection, "rag_segments")).isTrue();
-            assertThat(columnExists(connection, "rag_segments", "embedding_json")).isTrue();
-            assertThat(tableExists(connection, "embedding_cache")).isFalse();
-            assertThat(tableExists(connection, "analysis_stage_checkpoints")).isFalse();
-            assertThat(tableExists(connection, "model_raw_responses")).isFalse();
-            assertThat(tableExists(connection, "analysis_quality_evaluations")).isFalse();
-            assertThat(constraintExists(
-                    connection,
                     "rag_segments",
-                    "uk_rag_segments_media_source_index"
-            )).isTrue();
+                    "embedding_cache",
+                    "analysis_stage_checkpoints",
+                    "model_raw_responses",
+                    "analysis_quality_evaluations",
+                    "storage_consistency_findings"
+            )) {
+                assertThat(tableExists(connection, legacyTable))
+                        .as("legacy table %s should be removed", legacyTable)
+                        .isFalse();
+            }
+            assertThat(columnExists(connection, "media_files", "object_id")).isFalse();
         }
     }
 
     @Test
-    void contentHashIsUniqueWithinAUserButReusableByAnotherUser() throws Exception {
+    void contentHashCanBeReusedWithinAndAcrossUsers() throws Exception {
         String jdbcUrl = "jdbc:h2:mem:flyway-content-hash;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
         Flyway.configure()
                 .dataSource(jdbcUrl, "sa", "")
@@ -130,13 +86,13 @@ class FlywayMigrationTest {
             statement.executeUpdate(mediaInsertSql(1, "first.mp4"));
             statement.executeUpdate(mediaInsertSql(2, "same-content.mp4"));
 
-            assertThatThrownBySql(() -> statement.executeUpdate(mediaInsertSql(1, "duplicate.mp4")));
+            statement.executeUpdate(mediaInsertSql(1, "duplicate.mp4"));
         }
     }
 
     @Test
-    void deletingMediaKeepsCompletedUploadSessionAsDetachedAuditRecord() throws Exception {
-        String jdbcUrl = "jdbc:h2:mem:flyway-delete-media;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
+    void persistsCheckpointAndFailureInTheFourCoreTables() throws Exception {
+        String jdbcUrl = "jdbc:h2:mem:flyway-core-records;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
         Flyway.configure()
                 .dataSource(jdbcUrl, "sa", "")
                 .locations("classpath:db/migration")
@@ -147,92 +103,23 @@ class FlywayMigrationTest {
              Statement statement = connection.createStatement()) {
             statement.executeUpdate("""
                     INSERT INTO users (id, username, password, nickname)
-                    VALUES (1, 'delete-user', 'hash', '删除测试用户')
+                    VALUES (1, 'core-user', 'hash', '核心表测试用户')
                     """);
-            statement.executeUpdate(mediaInsertSql(1, "delete-me.mp4"));
+            statement.executeUpdate(mediaInsertSql(1, "core.mp4"));
             statement.executeUpdate("""
-                    INSERT INTO multipart_upload_sessions (
-                        session_id, provider_upload_id, user_id, filename,
-                        content_hash, content_type, size_bytes, bucket_name,
-                        temporary_object_key, total_parts, part_size, status,
-                        media_id, expires_at
-                    ) VALUES (
-                        '00000000-0000-0000-0000-000000000001', 'provider-1', 1, 'delete-me.mp4',
-                        '5d41402abc4b2a76b9719d911017c592', 'video/mp4', 1024, 'media',
-                        'multipart/delete-me', 1, 1024, 'COMPLETED',
-                        1, CURRENT_TIMESTAMP
-                    )
+                    INSERT INTO agent_checkpoints (media_id, checkpoint_key, stage, payload)
+                    VALUES (1, 'goal:demo:plan', 'PLAN_COMPLETED', '{"plan":[]}')
+                    """);
+            statement.executeUpdate("""
+                    INSERT INTO failed_analysis_tasks (
+                        media_id, action, mode, content_hash, user_goal, attempt_count,
+                        error_type, error_message
+                    ) VALUES (1, 'ANALYZE', 'GENERAL', 'hash', '测试失败任务', 1,
+                              'TEST_FAILURE', '测试错误')
                     """);
 
-            statement.executeUpdate("DELETE FROM media_files WHERE id = 1");
-
-            try (ResultSet result = statement.executeQuery("""
-                    SELECT media_id
-                    FROM multipart_upload_sessions
-                    WHERE session_id = '00000000-0000-0000-0000-000000000001'
-                    """)) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getObject("media_id")).isNull();
-            }
-        }
-    }
-
-    @Test
-    void deletingAnalyzedMediaCascadesOwnedDerivedDataAndDetachesRawAudit() throws Exception {
-        String jdbcUrl = "jdbc:h2:mem:flyway-delete-analyzed-media;MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1";
-        Flyway.configure()
-                .dataSource(jdbcUrl, "sa", "")
-                .locations("classpath:db/migration")
-                .load()
-                .migrate();
-
-        try (Connection connection = DriverManager.getConnection(jdbcUrl, "sa", "");
-             Statement statement = connection.createStatement()) {
-            statement.executeUpdate("""
-                    INSERT INTO users (id, username, password, nickname)
-                    VALUES (1, 'analyzed-user', 'hash', '分析删除测试用户')
-                    """);
-            statement.executeUpdate(mediaInsertSql(1, "analyzed.mp4"));
-            statement.executeUpdate("""
-                    INSERT INTO analysis_tasks (task_id, media_id, user_id, task_type, status)
-                    VALUES ('00000000-0000-0000-0000-000000000002', 1, 1, 'FULL_ANALYSIS', 'SUCCESS')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO analysis_artifacts (
-                        task_id, media_id, artifact_type, stage, content_hash, content_json,
-                        task_type, checkpoint_stage, goal_hash, input_hash, model_version,
-                        checkpoint_status
-                    ) VALUES ('task-2', 1, 'TRANSCRIPT', 'ASR', 'artifact', '{}',
-                              'FULL_ANALYSIS', 'ASR', 'goal', 'input', 'model', 'COMPLETED')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO analysis_artifacts (
-                        task_id, media_id, artifact_type, stage, content_hash, content_json,
-                        api_name, model_version, prompt_hash, parse_status
-                    ) VALUES ('task-2', 1, 'MODEL_RAW_RESPONSE', 'SUMMARY', 'raw', '{}',
-                              'model-api', 'model', 'prompt', 'SUCCESS')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO analysis_artifacts (
-                        task_id, media_id, artifact_type, stage, content_hash, content_json
-                    ) VALUES ('task-2', 1, 'QUALITY_EVALUATION', 'QUALITY_REVIEW', 'quality', '{}')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO video_qa_messages (conversation_id, user_id, media_id, role, content)
-                    VALUES ('00000000-0000-0000-0000-000000000003', 1, 1, 'USER', '问题')
-                    """);
-            statement.executeUpdate("""
-                    INSERT INTO rag_segments (
-                        user_id, media_id, segment_index, source, content, token_text
-                    ) VALUES (1, 1, 0, 'TRANSCRIPT', '片段', '片段')
-                    """);
-
-            statement.executeUpdate("DELETE FROM media_files WHERE id = 1");
-
-            assertThat(rowCount(statement, "analysis_tasks")).isZero();
-            assertThat(rowCount(statement, "analysis_artifacts")).isZero();
-            assertThat(rowCount(statement, "video_qa_messages")).isZero();
-            assertThat(rowCount(statement, "rag_segments")).isZero();
+            assertThat(rowCount(statement, "agent_checkpoints")).isEqualTo(1);
+            assertThat(rowCount(statement, "failed_analysis_tasks")).isEqualTo(1);
         }
     }
 

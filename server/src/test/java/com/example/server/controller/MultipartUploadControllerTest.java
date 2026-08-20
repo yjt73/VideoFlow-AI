@@ -12,6 +12,7 @@ import com.example.server.security.RestAuthenticationEntryPoint;
 import com.example.server.security.SecurityConfig;
 import com.example.server.service.MultipartUploadService;
 import com.example.server.service.MultipartCompletionService;
+import com.example.server.service.AuthService;
 import com.example.server.task.persistence.AnalysisTaskMapper;
 import com.example.server.task.persistence.OutboxEventMapper;
 import org.junit.jupiter.api.Test;
@@ -19,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -43,6 +45,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "security.jwt.secret=0123456789abcdef0123456789abcdef",
         "security.jwt.expiration-seconds=7200"
 })
+@ActiveProfiles("legacy-persistence")
 class MultipartUploadControllerTest {
 
     @Autowired
@@ -54,6 +57,8 @@ class MultipartUploadControllerTest {
     private MultipartUploadService service;
     @MockBean
     private MultipartCompletionService completionService;
+    @MockBean
+    private AuthService authService;
     @MockBean
     private UserMapper userMapper;
     @MockBean

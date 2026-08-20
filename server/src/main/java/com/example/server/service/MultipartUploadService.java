@@ -19,6 +19,7 @@ import com.example.server.storage.persistence.StorageObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
@@ -29,6 +30,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@Profile("legacy-persistence")
 public class MultipartUploadService {
 
     public static final long PART_SIZE = 5L * 1024 * 1024;

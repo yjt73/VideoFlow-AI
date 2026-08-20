@@ -9,7 +9,6 @@ import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.AiService;
 import com.example.server.service.AiAnalysisStrategy;
-import com.example.server.service.StorageAccessService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.FileSystemResource;
@@ -46,9 +45,6 @@ public class DebugController {
     @Autowired
     private AiService aiService;
 
-    @Autowired
-    private StorageAccessService storageAccessService;
-
     //纯文字提取接口
     @GetMapping("/transcribe")
     /** 直接触发指定媒体的语音转写。 */
@@ -75,7 +71,7 @@ public class DebugController {
             throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问他人的媒体");
         }
 
-        String inputPath = storageAccessService.internalGetUrl(id).toString();
+        String inputPath = mediaFile.getFilePath();
 
         String outputMp3Path = System.getProperty("java.io.tmpdir") + File.separator + "download_" + UUID.randomUUID() + ".mp3";
         System.out.println("⬇ 下载请求，正在从源地址转码音频: " + inputPath);

@@ -2,6 +2,8 @@ package com.example.server.utils;
 
 import com.example.server.dto.AgentState;
 import com.example.server.dto.AnalysisResult;
+import com.example.server.dto.ModeClassification;
+import com.example.server.dto.VideoRetrievalIntent;
 import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
 import com.example.server.ai.model.StructuredModelOutputParser;
@@ -78,9 +80,13 @@ public class DeepSeekUtils {
 
     /** 根据视频上下文生成后续分析计划。 */
     public AgentState.AgentPlan plan(VideoContext context) {
+        return plan(context, "");
+    }
+
+    public AgentState.AgentPlan plan(VideoContext context, String instruction) {
         try {
             String prompt = """
-                    你是 Video Agent 的 Planner。理解用户目标，并拆成 3 到 5 个可执行任务。
+                    你是 Video Agent 的 Planner。理解用户目标，并拆成 1 到 5 个可执行任务。
                     任务必须能够仅依靠 VideoContext 中的 ASR、OCR 和时间戳证据完成。
                     只返回 JSON：
                     {
@@ -89,9 +95,82 @@ public class DeepSeekUtils {
                     }
                     VideoContext:
                     """ + objectMapper.writeValueAsString(context);
+            if (instruction != null && !instruction.isBlank()) {
+                prompt += "\n\n本次分析模式的额外规划要求：" + instruction;
+            }
             return parseJson(chat("LLM_PLAN", prompt), AgentState.AgentPlan.class);
         } catch (Exception e) {
             throw new IllegalStateException("Agent 任务规划失败", e);
+        }
+    }
+
+    public AgentState.AgentPlan repairPlan(VideoContext context,
+                                           AgentState.AgentPlan invalidPlan,
+                                           String instruction) {
+        try {
+            String prompt = """
+                    你是 Video Agent 的 Planner。上一份计划结构不完整，请修复为 1 到 5 个非空、可验证任务。
+                    只返回 JSON：
+                    {"understoodGoal":"明确目标","tasks":["任务1","任务2"]}
+                    InvalidPlan:
+                    """ + objectMapper.writeValueAsString(invalidPlan) + "\nVideoContext:\n"
+                    + objectMapper.writeValueAsString(context);
+            if (instruction != null && !instruction.isBlank()) {
+                prompt += "\n\n本次分析模式的额外规划要求：" + instruction;
+            }
+            return parseJson(chat("LLM_PLAN_REPAIR", prompt), AgentState.AgentPlan.class);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Agent 任务计划修复失败", exception);
+        }
+    }
+
+    public AgentState.AgentPlan revisePlan(VideoContext context,
+                                           AgentState.AgentPlan currentPlan,
+                                           AgentState.CriticResult critique,
+                                           String instruction) {
+        try {
+            String prompt = """
+                    你是 Video Agent 的 Planner。根据 Critic 反馈修订当前计划，保留有效任务并补齐遗漏。
+                    最终返回 1 到 5 个按顺序排列、可由视频证据验证的任务。
+                    只返回 JSON：
+                    {"understoodGoal":"明确目标","tasks":["任务1","任务2"]}
+                    CurrentPlan:
+                    """ + objectMapper.writeValueAsString(currentPlan) + "\nCritic:\n"
+                    + objectMapper.writeValueAsString(critique) + "\nVideoContext:\n"
+                    + objectMapper.writeValueAsString(context);
+            if (instruction != null && !instruction.isBlank()) {
+                prompt += "\n\n本次分析模式的额外规划要求：" + instruction;
+            }
+            return parseJson(chat("LLM_PLAN_REVISE", prompt), AgentState.AgentPlan.class);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Agent 任务计划修订失败", exception);
+        }
+    }
+
+    public VideoRetrievalIntent planRetrieval(String goal) {
+        try {
+            String prompt = """
+                    把用户目标改写成视频证据检索查询。只返回 JSON：
+                    {"semanticQuery":"检索语句","keywords":["关键词"],"visualKeywords":["画面文字"]}
+                    用户目标：
+                    """ + goal;
+            return parseJson(chat("LLM_RETRIEVAL_PLAN", prompt), VideoRetrievalIntent.class);
+        } catch (Exception exception) {
+            throw new IllegalStateException("视频检索目标拆解失败", exception);
+        }
+    }
+
+    /** 将自然语言分析目标路由到参照项目定义的业务模式。 */
+    public ModeClassification classifyMode(String goal) {
+        try {
+            String prompt = """
+                    将用户的视频分析目标分类为 GENERAL、LEARNING、REVIEW 或 CREATION。
+                    只返回 JSON：{"mode":"GENERAL","reason":"分类理由"}
+                    用户目标：
+                    """ + goal;
+            return parseJson(chat("LLM_CLASSIFY_MODE", prompt), ModeClassification.class);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Agent 模式识别失败", exception);
         }
     }
 
@@ -117,6 +196,13 @@ public class DeepSeekUtils {
     public AnalysisResult execute(VideoContext context,
                                   AgentState.AgentPlan plan,
                                   AgentState.CriticResult previousCritique) {
+        return execute(context, plan, previousCritique, "");
+    }
+
+    public AnalysisResult execute(VideoContext context,
+                                  AgentState.AgentPlan plan,
+                                  AgentState.CriticResult previousCritique,
+                                  String instruction) {
         try {
             String prompt = """
                     你是 Video Agent 的 Executor。按照计划分析 VideoContext 并生成结构化产物。
@@ -142,6 +228,10 @@ public class DeepSeekUtils {
 
                     VideoContext:
                     """ + objectMapper.writeValueAsString(context);
+            if (instruction != null && !instruction.isBlank()) {
+                prompt += "\n\n本次分析模式的额外产物要求：" + instruction
+                        + "\n请额外使用 sections 数组输出对应结构化段落。";
+            }
             return parseJson(chat("LLM_EXECUTE", prompt), AnalysisResult.class);
         } catch (Exception e) {
             throw new IllegalStateException("Agent 执行失败", e);
@@ -152,6 +242,13 @@ public class DeepSeekUtils {
     public AgentState.CriticResult critique(VideoContext context,
                                             AgentState.AgentPlan plan,
                                             AnalysisResult result) {
+        return critique(context, plan, result, "");
+    }
+
+    public AgentState.CriticResult critique(VideoContext context,
+                                            AgentState.AgentPlan plan,
+                                            AnalysisResult result,
+                                            String instruction) {
         try {
             String prompt = """
                     你是 Video Agent 的 Critic，只负责检查，不负责改写产物。
@@ -180,6 +277,9 @@ public class DeepSeekUtils {
 
                     VideoContext:
                     """ + objectMapper.writeValueAsString(context);
+            if (instruction != null && !instruction.isBlank()) {
+                prompt += "\n\n本次分析模式的额外审查要求：" + instruction;
+            }
             return parseJson(chat("LLM_CRITIQUE", prompt), AgentState.CriticResult.class);
         } catch (Exception e) {
             throw new IllegalStateException("Critic 校验失败", e);

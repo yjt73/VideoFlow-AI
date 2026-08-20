@@ -11,12 +11,14 @@ import com.example.server.storage.domain.StorageObjectStatus;
 import com.example.server.storage.persistence.StorageObjectMapper;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.Objects;
 
 @Service
+@Profile("legacy-persistence")
 public class StorageAccessService {
 
     private final MediaFileMapper mediaFileMapper;

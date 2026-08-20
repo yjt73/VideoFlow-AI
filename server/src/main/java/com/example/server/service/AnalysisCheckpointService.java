@@ -2,10 +2,12 @@ package com.example.server.service;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.Profile;
 
 import java.util.Optional;
 
 @Service
+@Profile("legacy-persistence")
 public class AnalysisCheckpointService {
 
     private final JdbcTemplate jdbcTemplate;
@@ -29,7 +31,6 @@ public class AnalysisCheckpointService {
                 WHERE id = ?
                 """,
                 key.taskId(),
-                key.mediaId(),
                 key.taskType(),
                 key.stage(),
                 key.goalHash(),

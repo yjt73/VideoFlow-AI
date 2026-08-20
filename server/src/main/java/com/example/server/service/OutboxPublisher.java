@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.context.annotation.Profile;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -21,6 +22,7 @@ import static com.example.server.task.domain.AnalysisTaskStatus.PENDING;
 import static com.example.server.task.domain.AnalysisTaskStatus.QUEUED;
 
 /** 周期发布待发送的 Outbox 事件，并保留失败事件供下次重试。 */
+@Profile("legacy-persistence")
 @Component
 public class OutboxPublisher {
 

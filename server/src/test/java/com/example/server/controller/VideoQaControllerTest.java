@@ -9,6 +9,7 @@ import com.example.server.mapper.UserMapper;
 import com.example.server.service.LibraryQaService;
 import com.example.server.service.VideoQaStreamService;
 import com.example.server.service.VideoQaService;
+import com.example.server.service.AuthService;
 import com.example.server.security.JwtAuthenticationFilter;
 import com.example.server.security.JwtService;
 import com.example.server.security.RestAccessDeniedHandler;
@@ -53,6 +54,8 @@ class VideoQaControllerTest {
 
     @MockBean
     private VideoQaService videoQaService;
+    @MockBean
+    private AuthService authService;
     @MockBean
     private LibraryQaService libraryQaService;
     @MockBean

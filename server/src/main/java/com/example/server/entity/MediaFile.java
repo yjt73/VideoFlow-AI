@@ -3,6 +3,7 @@ package com.example.server.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
 import lombok.Data;
 import java.time.LocalDateTime;
 
@@ -25,6 +26,7 @@ public class MediaFile {
     /** MinIO 中媒体对象的访问地址。 */
     private String filePath;
     /** 私有对象存储中的物理对象 ID。 */
+    @TableField(exist = false)
     private Long objectId;
     /** 媒体内容的 32 位小写 MD5，用于同一用户内去重。 */
     private String contentHash;
