@@ -8,6 +8,7 @@ import com.example.server.dto.AnalysisMode;
 import com.example.server.dto.RouteDecision;
 import com.example.server.dto.RouteRequest;
 import com.example.server.dto.TaskStatus;
+import com.example.server.dto.TaskEvent;
 import com.example.server.dto.VideoEvidenceHit;
 import com.example.server.entity.MediaFile;
 import com.example.server.exception.BusinessException;
@@ -104,11 +105,9 @@ public class AnalysisController {
             @RequestParam(required = false) String mode,
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) {
         String normalizedGoal = normalizeText(goal, "分析目标");
-        if (mode != null) throw new IllegalArgumentException("分析模式固定为通用分析，不支持自行设置");
-        AnalysisMode analysisMode = AnalysisMode.GENERAL;
+        AnalysisMode analysisMode = AnalysisMode.fromRequest(mode);
         MediaFile mediaFile = mediaService.requireOwnedMedia(id, userId);
-        var existing = checkpointService.loadResult(id, normalizedGoal, analysisMode);
-        if (existing != null && existing.result() != null) {
+        if (checkpointService.loadResult(id, normalizedGoal, analysisMode) != null) {
             // 已有可复用结果，是“已完成”而非“已受理”，用 200 与异步受理区分开。
             return ResponseEntity.ok(Result.ok());
         }
@@ -164,8 +163,10 @@ public class AnalysisController {
         ensureRating(feedback);
         MediaFile mediaFile = mediaService.requireOwnedMedia(feedback.mediaId(), userId);
         String revisedGoal = aiService.revisionGoal(feedback);
+        AnalysisMode analysisMode = AnalysisMode.fromRequest(
+                mode == null || mode.isBlank() ? feedback.mode() : mode);
         return submissionResponse(
-                dispatchService.submit(mediaFile, revisedGoal, feedback, AnalysisMode.fromRequest(mode)));
+                dispatchService.submit(mediaFile, revisedGoal, feedback, analysisMode));
     }
 
     @GetMapping("/agent-feedback")
@@ -212,8 +213,8 @@ public class AnalysisController {
                 TaskEventService.ANALYSIS,
                 normalizedGoal,
                 analysisMode,
-                statusService.current(id, normalizedGoal, analysisMode),
-                statusService.stage(id, normalizedGoal, analysisMode));
+                () -> TaskEvent.of(statusService.current(id, normalizedGoal, analysisMode),
+                        statusService.stage(id, normalizedGoal, analysisMode)));
     }
 
     @GetMapping("/agent-evaluation")

@@ -6,8 +6,8 @@
     <header class="navbar">
       <div class="nav-content">
         <div class="brand">
-          <span class="brand-do">DO</span>
           <span class="brand-video">Video</span>
+          <span class="brand-flow">Flow</span>
           <span class="beta-badge">PRO</span>
         </div>
 
@@ -21,14 +21,14 @@
 
           <div v-else class="user-profile">
             <span class="user-name">:: {{ currentUser.nickname }} ::</span>
-            <button class="logout-btn" @click="logout" title="退出登录">
+            <button class="logout-btn" @click="logout" title="退出登录" aria-label="退出登录">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
             </button>
           </div>
 
-          <div class="status-pill" :class="{ 'is-active': uploading }">
+          <div class="status-pill" :class="{ 'is-active': uploading }" role="status" aria-live="polite">
             <div class="status-dot"></div>
-            <span class="status-text">{{ uploading ? '数据传输中...' : '系统就绪' }}</span>
+            <span class="status-text">{{ systemStatusText }}</span>
           </div>
         </div>
       </div>
@@ -44,15 +44,16 @@
               type="file"
               id="file-input"
               @change="handleFileChange"
-              accept="video/*"
+              accept=".mp4,.mov,.mkv,.avi,.webm,.m4v"
               hidden
           />
 
           <div
               class="upload-magnet"
               :class="{ 'processing': uploading, 'is-dragover': isDragOver }"
+              @dragenter.prevent="handleDragEnter"
               @dragover.prevent="isDragOver = true"
-              @dragleave.prevent="isDragOver = false"
+              @dragleave.prevent="handleDragLeave"
               @drop.prevent="handleDrop"
           >
             <div class="split-container" v-if="!uploading">
@@ -81,10 +82,15 @@
                     <input
                         v-model="videoUrl"
                         type="text"
+                        inputmode="url"
+                        autocomplete="off"
+                        spellcheck="false"
                         placeholder="粘贴视频链接..."
+                        aria-label="视频链接"
+                        :disabled="uploading"
                         @keyup.enter="handleUrlUpload"
                     />
-                    <button class="url-go-btn" @click="handleUrlUpload">
+                    <button class="url-go-btn" :disabled="uploading" @click="handleUrlUpload" aria-label="解析视频链接">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                     </button>
                   </div>
@@ -94,44 +100,74 @@
             </div>
 
             <div class="magnet-content busy" v-else>
+              <div class="quantum-loader"></div>
+              <span class="busy-text">{{ uploadProgress.label }}</span>
+              <span v-if="uploadProgress.filename" class="busy-file">{{ uploadProgress.filename }}</span>
               <div
-                  v-if="!['paused', 'failed'].includes(uploadTask.state)"
-                  class="quantum-loader"
-              ></div>
-              <span class="busy-text">{{ uploadStatusText }}</span>
-              <div class="upload-progress-track">
-                <div
-                    class="upload-progress-fill"
-                    :style="{ width: `${uploadDisplayProgress}%` }"
-                ></div>
+                  v-if="uploadProgress.percent !== null"
+                  class="upload-progress"
+                  role="progressbar"
+                  aria-label="视频上传进度"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  :aria-valuenow="uploadProgress.percent"
+              >
+                <span :style="{ width: `${uploadProgress.percent}%` }"></span>
               </div>
-              <span class="upload-progress-label">{{ uploadDisplayProgress }}%</span>
-              <div class="upload-controls">
-                <button v-if="canPauseUpload" @click.stop="pauseUpload">暂停上传</button>
-                <button v-if="canResumeUpload" @click.stop="resumeUpload">继续上传</button>
-                <button class="danger" @click.stop="cancelUpload">取消上传</button>
+              <span v-if="uploadProgress.detail" class="busy-stat" aria-live="polite">{{ uploadProgress.detail }}</span>
+              <span v-if="uploadProgress.warning" class="busy-warning" role="status">{{ uploadProgress.warning }}</span>
+              <div v-if="uploadAbort" class="busy-actions">
+                <button type="button" @click="cancelUpload">取消上传</button>
               </div>
             </div>
 
             <div class="border-glow"></div>
           </div>
+
+          <div v-if="resumableFile && !uploading" class="upload-resume" role="status">
+            <span>{{ resumeHint }}</span>
+            <button type="button" @click="resumeUpload">继续上传</button>
+            <button type="button" @click="discardResumableUpload">重新开始</button>
+          </div>
         </div>
         <transition name="toast-pop">
-          <div v-if="message" class="notification-bar" :class="{ 'error': message.startsWith('❌') || message.startsWith('⚠️') }">
+          <div
+              v-if="message"
+              class="notification-bar"
+              :class="{ 'error': messageIsError }"
+              :role="messageIsError ? 'alert' : 'status'"
+              :aria-live="messageIsError ? 'assertive' : 'polite'"
+              :title="messageIsError ? '点击关闭这条提示' : null"
+              @click="dismissMessage"
+          >
             {{ message }}
           </div>
         </transition>
       </section>
 
       <section v-if="list.length > 0" class="workspace-section">
-        <div class="section-header"><h3>工作台</h3><div class="count-chip">{{ list.length }} TASKS</div></div>
+        <div class="section-header">
+          <div class="library-title">
+            <h3>视频资料库</h3>
+            <div class="count-chip">{{ list.length }} 个视频</div>
+          </div>
+          <label class="library-search">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            <input v-model="searchQuery" type="search" placeholder="搜索视频名称" aria-label="搜索视频名称" />
+          </label>
+        </div>
         <div class="card-grid">
-          <div v-for="item in list" :key="item.id" class="project-card">
+          <div v-for="item in visibleList" :key="item.id" class="project-card">
 
-            <button class="delete-btn" @click.stop="deleteItem(item)" title="删除此项">
+            <button
+                class="delete-btn"
+                :disabled="deletingId === item.id"
+                :title="deletingId === item.id ? '正在删除…' : '删除视频'"
+                :aria-label="`删除 ${item.filename}`"
+                @click.stop="deleteItem(item)"
+            >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
+                <polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M8 6V4h8v2"></path>
               </svg>
             </button>
             <div class="card-meta">
@@ -142,20 +178,24 @@
                 <div class="filename-mask" :title="item.filename">{{ item.filename }}</div>
                 <div class="meta-tags">
                   <span class="time-tag">{{ formatTime(item.uploadTime) }}</span>
-                  <span class="status-indicator" :class="item.status.toLowerCase()">
-                    {{ item.status === 'COMPLETED' ? 'READY' : 'PROCESSING' }}
+                  <span
+                      class="status-indicator"
+                      :class="cardStatusClass(item)"
+                      :title="cardStatusTitle(item)"
+                  >
+                    {{ cardStatusLabel(item) }}
                   </span>
                 </div>
               </div>
             </div>
 
             <div class="action-dock">
-              <button class="dock-item" @click="playMedia(item)">
-                <span class="item-icon">▶</span>
-                <span class="item-label">播放视频</span>
-              </button>
-
-              <button class="dock-item" @click="downloadAudio(item)">
+              <button
+                  class="dock-item"
+                  :disabled="item.status !== 'COMPLETED'"
+                  :title="actionTitle(item, '下载音频')"
+                  @click="downloadAudio(item)"
+              >
                 <span class="item-icon">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>
                 </span>
@@ -165,6 +205,7 @@
               <button
                   class="dock-item"
                   :disabled="item.status !== 'COMPLETED'"
+                  :title="actionTitle(item, '提取文字')"
                   @click="transcribe(item.id)"
               >
                 <span class="item-icon">
@@ -176,32 +217,43 @@
               <button
                   class="dock-item ai-core"
                   :disabled="item.status !== 'COMPLETED'"
-                  @click="openAnalysis(item.id)"
+                  :title="actionTitle(item, '打开 Video Agent')"
+                  @click="openAgent(item)"
               >
                 <span class="item-icon">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
                 </span>
                 <div class="label-group">
-                  <span class="item-label">AI 智能总结</span>
+                  <span class="item-label">Video Agent</span>
                 </div>
                 <div class="shimmer"></div>
-              </button>
-
-              <button
-                  class="dock-item"
-                  :disabled="item.status !== 'COMPLETED'"
-                  @click="openVideoQa(item)"
-              >
-                <span class="item-icon">?</span>
-                <span class="item-label">视频问答</span>
               </button>
             </div>
           </div>
         </div>
+        <div v-if="visibleList.length === 0" class="library-empty">
+          <p>没有找到“{{ searchQuery }}”</p>
+          <button type="button" @click="searchQuery = ''">清除搜索</button>
+        </div>
       </section>
 
+      <div v-if="currentUser && (listError || !list.length)" class="library-empty" role="status">
+        <p>{{ listLoading ? '正在加载视频资料库…' : listError || '还没有视频，上传本地文件或粘贴视频链接即可开始分析。' }}</p>
+        <button v-if="listError" type="button" :disabled="listLoading" @click="fetchList({ notify: true })">重新加载</button>
+      </div>
+
       <div class="sidebar-backdrop" v-if="sidebar.visible" @click="closeSidebar"></div>
-      <div class="sidebar-panel" :class="{ 'is-open': sidebar.visible }">
+      <div
+          ref="sidebarPanel"
+          class="sidebar-panel"
+          :class="{ 'is-open': sidebar.visible }"
+          :inert="!sidebar.visible"
+          role="dialog"
+          aria-modal="true"
+          tabindex="-1"
+          :aria-label="sidebar.title || '任务详情'"
+          @keydown="trapPanelFocus($event, sidebarPanel)"
+      >
         <div class="sidebar-header">
           <div class="sidebar-title">
             <span class="icon" v-if="sidebar.type === 'ai'">
@@ -212,90 +264,235 @@
             </span>
             {{ sidebar.title }}
           </div>
-          <button class="close-btn" @click="closeSidebar">×</button>
+          <button class="close-btn" @click="closeSidebar" aria-label="关闭分析面板">×</button>
         </div>
-        <div class="sidebar-body">
-          <div v-if="sidebar.type === 'ai'" class="analysis-panel">
-            <div class="analysis-config">
-              <p>分析模式：通用分析（固定）</p>
-              <label for="analysis-goal">分析目标</label>
-              <textarea
-                id="analysis-goal"
-                v-model="analysisGoal"
-                maxlength="500"
-                :disabled="analysisBusy"
-                @input="sidebar.content = '该目标尚未查询，点击“开始分析”或离开输入框查看已有结果。'"
-                @blur="loadAnalysisResult"
-              ></textarea>
-              <button @click="submitAnalysis" :disabled="analysisBusy || !analysisGoal.trim()">
-                {{ analysisBusy ? '分析中...' : '开始分析' }}
+        <div ref="sidebarBody" class="sidebar-body">
+          <div v-if="sidebar.type === 'ai'" class="video-evidence">
+            <video
+                v-if="sidebar.playbackUrl"
+                ref="videoPlayer"
+                :src="sidebar.playbackUrl"
+                controls
+                playsinline
+                preload="metadata"
+                @error="handlePlaybackError"
+            ></video>
+            <div v-else-if="sidebar.playbackLoading" class="video-evidence-loading">正在载入原视频...</div>
+            <div v-else-if="sidebar.playbackError" class="video-evidence-error" role="alert">
+              <span>{{ sidebar.playbackError }}</span>
+              <button type="button" @click="retryPlayback">重新加载</button>
+            </div>
+            <p v-if="sidebar.playbackUrl">点击分析结果中的时间戳，可跳转到对应画面</p>
+          </div>
+          <div v-if="sidebar.type === 'ai' && sidebar.mode === 'compose'" class="agent-composer">
+            <p class="agent-caption">选择分析模式（决定产物形态）</p>
+            <div class="goal-presets agent-mode-row">
+              <button
+                  v-for="m in analysisModes"
+                  :key="m.value"
+                  :class="{ active: sidebar.analysisMode === m.value }"
+                  @click="sidebar.analysisMode = m.value"
+              >
+                <strong>{{ m.title }}</strong>
+                <span>{{ m.description }}</span>
               </button>
             </div>
-            <div v-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
-            <div v-else class="markdown-content" v-html="renderedMarkdown"></div>
+            <p class="agent-caption">告诉 Agent 你希望从视频中得到什么产物</p>
+            <p v-if="sidebar.error" class="inline-error" role="alert">{{ sidebar.error }}</p>
+            <textarea
+                v-model="sidebar.goal"
+                aria-label="分析目标"
+                maxlength="500"
+                placeholder="例如：梳理核心观点，给出带时间戳的证据和可执行建议（Ctrl / ⌘ + Enter 提交）"
+                @keydown.ctrl.enter.prevent="submitAgent"
+                @keydown.meta.enter.prevent="submitAgent"
+            ></textarea>
+            <p v-if="sidebar.goal.length > 400" class="field-counter">已输入 {{ sidebar.goal.length }} / 500 字</p>
+            <div class="goal-presets">
+              <button
+                  v-for="preset in goalPresets"
+                  :key="preset.title"
+                  :class="{ active: sidebar.goal === preset.prompt }"
+                  @click="sidebar.goal = preset.prompt"
+              >
+                <strong>{{ preset.title }}</strong>
+                <span>{{ preset.description }}</span>
+              </button>
+            </div>
+            <button class="agent-run-btn" :disabled="!sidebar.goal.trim()" @click="submitAgent">
+              {{ sidebar.error ? '重新分析' : '开始分析' }}
+            </button>
           </div>
-          <div v-else-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
-          <div v-else-if="sidebar.type === 'qa'" class="qa-panel">
-            <div class="qa-messages">
-              <div v-for="(entry, index) in qa.messages" :key="index" class="qa-message" :class="entry.role">
-                <div class="qa-role">{{ entry.role === 'user' ? '我' : 'AI' }}</div>
-                <div class="qa-content">{{ entry.content }}</div>
-                <div v-if="entry.citations?.length" class="qa-citations">
-                  <div v-for="citation in entry.citations" :key="`${citation.timestampMs}-${citation.content}`" class="qa-citation">
-                    {{ formatTimestamp(citation.timestampMs) }} · {{ citation.source }} · {{ citation.content }}
-                  </div>
+
+          <div v-else-if="sidebar.loading" class="agent-running">
+            <div class="loading-state">
+              <div class="quantum-loader small"></div>
+              <p aria-live="polite">{{ loadingHeadline }}</p>
+              <p v-if="sidebar.streamOffline" class="stream-offline" role="status">
+                连接中断，正在自动重连（第 {{ sidebar.streamRetry }} 次）· 任务仍在服务端继续
+              </p>
+              <p class="loading-hint">可以关闭本面板，任务会在后台继续，完成后会通知你</p>
+            </div>
+            <div v-if="sidebar.plan?.tasks?.length" class="agent-meta-block">
+              <span class="meta-label">任务计划</span>
+              <ol><li v-for="task in sidebar.plan.tasks" :key="task">{{ task }}</li></ol>
+            </div>
+            <div v-if="traceStages.length" class="agent-meta-block">
+              <span class="meta-label">已完成阶段</span>
+              <div class="stage-list"><span v-for="stage in traceStages" :key="stage[0]">{{ stage[0] }} · {{ stage[1] }}</span></div>
+            </div>
+          </div>
+
+          <div v-else>
+            <div v-if="sidebar.type === 'ai'">
+              <p v-if="sidebar.error" class="inline-error" role="alert">{{ sidebar.error }}</p>
+              <div class="result-actions">
+                <button type="button" @click="startNewAnalysis">更换产物</button>
+                <button type="button" :disabled="!sidebar.content" @click="copyResult">复制结果</button>
+                <button type="button" :disabled="!sidebar.content" @click="downloadResult">导出 Markdown</button>
+              </div>
+              <div class="evidence-search">
+                <div class="evidence-search-form">
+                  <input
+                      v-model="sidebar.evidenceQuery"
+                      aria-label="视频证据检索"
+                      maxlength="500"
+                      placeholder="定位 PPT、字幕、代码或某段讲解"
+                      @keyup.enter="searchEvidence"
+                  />
+                  <button type="button" :disabled="sidebar.evidenceLoading || !sidebar.evidenceQuery.trim()" @click="searchEvidence">
+                    {{ sidebar.evidenceLoading ? '检索中' : '定位证据' }}
+                  </button>
+                </div>
+                <p v-if="sidebar.evidenceError" class="evidence-search-error" aria-live="polite">{{ sidebar.evidenceError }}</p>
+                <div v-if="sidebar.evidenceResults.length" class="evidence-search-results" aria-live="polite">
+                  <button
+                      v-for="hit in sidebar.evidenceResults"
+                      :key="`${hit.startMs}-${hit.endMs}`"
+                      type="button"
+                      :title="hit.snippet || '该时间段暂无可展示文本'"
+                      @click="seekToEvidence(hit.startMs)"
+                  >
+                    <strong>{{ formatEvidenceTime(hit.startMs) }}</strong>
+                    <small>{{ hit.source || '视频证据' }}</small>
+                    <span>{{ hit.snippet || '该时间段暂无可展示文本' }}</span>
+                  </button>
                 </div>
               </div>
+              <div class="markdown-content" v-html="renderedMarkdown" @click="seekEvidence"></div>
+              <details v-if="sidebar.plan?.tasks?.length || traceStages.length" class="agent-inspector">
+                <summary>分析详情</summary>
+                <div class="agent-inspector-content">
+                <div v-if="sidebar.plan?.tasks?.length" class="agent-meta-block">
+                  <span class="meta-label">Planner 任务</span>
+                  <div v-if="sidebar.editingPlan" class="plan-editor">
+                    <div v-for="(_, index) in sidebar.planDraft" :key="index" class="plan-editor-row">
+                      <input v-model="sidebar.planDraft[index]" maxlength="500" :aria-label="`任务 ${index + 1}`" />
+                      <button type="button" title="删除任务" @click="removePlanTask(index)">×</button>
+                    </div>
+                    <button v-if="sidebar.planDraft.length < 5" type="button" @click="addPlanTask">添加任务</button>
+                    <div class="plan-editor-actions">
+                      <button type="button" @click="cancelPlanEdit">取消</button>
+                      <button type="button" :disabled="sidebar.rerunLoading" @click="rerunWithPlan">
+                        {{ sidebar.rerunLoading ? '提交中' : '按新计划重跑' }}
+                      </button>
+                    </div>
+                  </div>
+                  <template v-else>
+                    <ol><li v-for="task in sidebar.plan.tasks" :key="task">{{ task }}</li></ol>
+                    <button type="button" class="plan-edit-trigger" @click="startPlanEdit">调整计划</button>
+                  </template>
+                </div>
+                <div v-if="traceStages.length" class="agent-meta-block">
+                  <span class="meta-label">执行轨迹</span>
+                  <div class="stage-list"><span v-for="stage in traceStages" :key="stage[0]">{{ stage[0] }} · {{ stage[1] }}</span></div>
+                </div>
+                <div v-if="sidebar.evaluation && Object.keys(sidebar.evaluation).length" class="quality-row">
+                  <span>结构完整 {{ sidebar.evaluation.structuredValid ? '通过' : '待完善' }}</span>
+                  <span>证据支持 {{ formatPercent(sidebar.evaluation.evidenceSupportRate) }}</span>
+                  <span>Critic {{ sidebar.evaluation.criticPassed ? '通过' : '达到轮次上限' }}</span>
+                </div>
+                </div>
+              </details>
+              <div class="follow-up-box">
+                <textarea
+                    v-model="sidebar.followUp"
+                    aria-label="基于视频继续追问"
+                    maxlength="500"
+                    placeholder="基于视频继续追问...（Ctrl / ⌘ + Enter 发送）"
+                    @keydown.ctrl.enter.prevent="submitFollowUp"
+                    @keydown.meta.enter.prevent="submitFollowUp"
+                ></textarea>
+                <button :disabled="sidebar.followUpLoading || !sidebar.followUp.trim()" @click="submitFollowUp">
+                  {{ sidebar.followUpLoading ? '分析中' : '追问' }}
+                </button>
+              </div>
+              <div class="feedback-row">
+                <span>这个结果有帮助吗？</span>
+                <button :disabled="sidebar.feedbackLoading" :class="{ active: sidebar.feedback === 1 }" :aria-pressed="sidebar.feedback === 1" @click="sendFeedback(1)" title="有帮助">赞</button>
+                <button :disabled="sidebar.feedbackLoading" :class="{ active: sidebar.feedback === -1 }" :aria-pressed="sidebar.feedback === -1" @click="sendFeedback(-1)" title="需改进">踩</button>
+              </div>
             </div>
-            <div class="qa-input">
-              <input
-                  v-model="qa.question"
-                  type="text"
-                  placeholder="围绕这个视频提问..."
-                  @keyup.enter="submitVideoQuestion"
-              />
-              <button @click="submitVideoQuestion" :disabled="qa.loading || !qa.question.trim()">
-                {{ qa.loading ? '思考中' : '发送' }}
-              </button>
+            <div v-else class="text-content">
+              <p v-if="sidebar.error" class="inline-error" role="alert">{{ sidebar.error }}</p>
+              <template v-if="sidebar.content">
+                <div class="result-actions">
+                  <button type="button" @click="copyResult">复制全文</button>
+                  <button type="button" @click="downloadResult">导出文本</button>
+                </div>
+                <p class="text-meta">{{ transcriptMeta }}</p>
+                <pre>{{ sidebar.content }}</pre>
+              </template>
+              <p v-else-if="!sidebar.error" class="text-meta">这个视频还没有可展示的转写文本。</p>
             </div>
-          </div>
-          <div v-else>
-            <div class="text-content"><pre>{{ sidebar.content }}</pre></div>
           </div>
         </div>
       </div>
 
-      <div v-if="showAuthModal" class="auth-backdrop">
-        <div class="auth-panel">
+      <div v-if="showAuthModal" class="auth-backdrop" @click.self="closeAuthModal">
+        <div
+            ref="authPanel"
+            class="auth-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auth-title"
+            @keydown="trapAuthFocus"
+        >
           <div class="auth-header">
-            <h2 class="auth-title">{{ authMode === 'login' ? '用户登录' : '新用户注册' }}</h2>
-            <button class="close-btn" @click="closeAuthModal">×</button>
+            <h2 id="auth-title" class="auth-title">{{ authMode === 'login' ? '用户登录' : '新用户注册' }}</h2>
+            <button class="close-btn" @click="closeAuthModal" aria-label="关闭登录窗口">×</button>
           </div>
-          <div class="auth-body">
+          <form class="auth-body" @submit.prevent="handleAuth">
             <div class="input-group">
-              <label>USERNAME</label>
-              <input v-model="authForm.username" type="text" placeholder="输入账号" />
+              <label for="auth-username">用户名</label>
+              <input id="auth-username" v-model="authForm.username" type="text" placeholder="输入账号" autocomplete="username" autofocus />
             </div>
             <div class="input-group">
-              <label>PASSWORD</label>
-              <input v-model="authForm.password" type="password" placeholder="输入密码" />
+              <label for="auth-password">密码</label>
+              <input id="auth-password" v-model="authForm.password" type="password" placeholder="输入密码" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" />
             </div>
             <div class="input-group" v-if="authMode === 'register'">
-              <label>NICKNAME (昵称)</label>
-              <input v-model="authForm.nickname" type="text" placeholder="设置一个好听的名字" />
+              <label for="auth-nickname">昵称</label>
+              <input id="auth-nickname" v-model="authForm.nickname" type="text" placeholder="设置一个好听的名字" autocomplete="nickname" />
             </div>
             <div class="auth-action">
-              <button class="cyber-btn" @click="handleAuth" :disabled="authLoading">
+              <button type="submit" class="cyber-btn" :disabled="authLoading">
                 <span v-if="!authLoading">{{ authMode === 'login' ? '立即登录' : '提交注册' }}</span>
                 <span v-else>请求处理中...</span>
               </button>
             </div>
             <div class="auth-toggle">
               <span class="toggle-text">{{ authMode === 'login' ? '没有账号?' : '已有账号?' }}</span>
-              <button class="toggle-link" @click="switchAuthMode">{{ authMode === 'login' ? '去注册' : '去登录' }}</button>
+              <button type="button" class="toggle-link" :disabled="authLoading" @click="switchAuthMode()">{{ authMode === 'login' ? '去注册' : '去登录' }}</button>
             </div>
-            <p v-if="authMessage" class="auth-msg" :class="{'error': authError}">{{ authMessage }}</p>
-          </div>
+            <p
+                v-if="authMessage"
+                class="auth-msg"
+                :class="{'error': authError}"
+                :role="authError ? 'alert' : 'status'"
+                aria-live="polite"
+            >{{ authMessage }}</p>
+          </form>
         </div>
       </div>
     </main>
@@ -303,34 +500,53 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
-import { marked } from 'marked'
-import { apiFetch, askVideoQuestion, clearToken, getToken, setToken } from './api'
-import { calculateFileMd5 } from './upload/md5'
-import { ChunkUploadTransport } from './upload/chunkTransport'
-import { UploadManager, UPLOAD_STATES } from './upload/uploadManager'
-import { pollAnalysisTask } from './analysis/taskPolling'
+import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue'
+import { apiRequest, captureAuthSession, clearAuthToken, hasAuthToken, setAuthToken } from './api'
+import {
+  forgetUploadProgress,
+  formatBytes,
+  formatDurationText,
+  hasUploadProgress,
+  uploadVideoInChunks,
+  validateVideoFile
+} from './chunkUpload'
+import { DEMO_ITEM } from './demoData'
+import { createTaskStreams } from './taskEvents'
+import { useAnalysisWorkspace } from './useAnalysisWorkspace'
 
 // --- 变量定义 ---
+const DEMO_MODE = new URLSearchParams(window.location.search).has('demo')
+const MESSAGE_TIMEOUT_MS = 4000
 const file = ref(null)
 const videoUrl = ref('')
 const message = ref('')
+const messageIsError = ref(false)
 const uploading = ref(false)
+const uploadProgress = ref({ label: '准备上传', filename: '', percent: null, detail: '', warning: '' })
+const uploadAbort = ref(null)
+const resumableFile = ref(null)
+const resumableChunks = ref({ done: 0, total: 0 })
 const list = ref([])
-const isDragOver = ref(false)
-const sidebar = ref({ visible: false, type: 'ai', title: '', content: '', loading: false })
-const DEFAULT_ANALYSIS_GOAL = '理解视频核心内容并生成结构化分析报告'
-const analysisMediaId = ref(null)
-const analysisGoal = ref(DEFAULT_ANALYSIS_GOAL)
-const analysisGoals = ref({})
-const analysisBusy = ref(false)
-const qa = ref({
-  mediaId: null,
-  conversationId: null,
-  question: '',
-  messages: [],
-  loading: false
+const listLoading = ref(false)
+const listError = ref('')
+let listRequestVersion = 0
+let uploadRequestVersion = 0
+let authRequestVersion = 0
+const searchQuery = ref('')
+const videoPlayer = ref(null)
+const sidebarPanel = ref(null)
+const sidebarBody = ref(null)
+const authPanel = ref(null)
+const deletingId = ref(null)
+const isOffline = ref(typeof navigator !== 'undefined' && navigator.onLine === false)
+const activeTasks = ref([])
+const elapsedSeconds = ref(0)
+const visibleList = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase()
+  if (!query) return list.value
+  return list.value.filter(item => item.filename?.toLocaleLowerCase().includes(query))
 })
+const isDragOver = ref(false)
 const currentUser = ref(null)
 const showAuthModal = ref(false)
 const authMode = ref('login')
@@ -338,158 +554,267 @@ const authLoading = ref(false)
 const authMessage = ref('')
 const authError = ref(false)
 const authForm = ref({ username: '', password: '', nickname: '' })
-// 按媒体 ID 保存轮询定时器，避免同一任务被重复轮询。
-const pollingTimers = ref({})
-const uploadTask = ref({
-  state: UPLOAD_STATES.IDLE,
-  progress: 0,
-  hashProgress: 0,
-  retryCount: 0,
-  lastError: null
+const taskStreams = createTaskStreams({
+  onActiveChange: tasks => { activeTasks.value = tasks }
 })
+let dragDepth = 0
+let messageTimer = null
+let elapsedTimer = null
+let lastUploadProgress = {}
+let focusBeforeAuth = null
+let focusBeforeSidebar = null
 
-const activeUploadStates = new Set([
-  UPLOAD_STATES.HASHING,
-  UPLOAD_STATES.UPLOADING,
-  UPLOAD_STATES.RETRYING,
-  UPLOAD_STATES.PAUSED,
-  UPLOAD_STATES.MERGING,
-  UPLOAD_STATES.FAILED
-])
+// --- 状态展示 ---
+const activeTaskOf = mediaId => activeTasks.value.find(task => String(task.id) === String(mediaId))
 
-const uploadTransport = new ChunkUploadTransport({ apiFetch })
-const uploadManager = new UploadManager({
-  transport: uploadTransport,
-  calculateFileMd5,
-  onChange: (snapshot) => {
-    uploadTask.value = snapshot
-    uploading.value = activeUploadStates.has(snapshot.state)
+const systemStatusText = computed(() => {
+  if (isOffline.value) return '网络已断开'
+  if (uploading.value) {
+    return uploadProgress.value.percent !== null
+      ? `上传 ${uploadProgress.value.percent}%`
+      : '处理中'
   }
+  if (activeTasks.value.length) return `后台任务 ${activeTasks.value.length}`
+  return '系统就绪'
 })
 
-const uploadDisplayProgress = computed(() => (
-  uploadTask.value.state === UPLOAD_STATES.HASHING
-    ? uploadTask.value.hashProgress
-    : uploadTask.value.progress
-))
+const cardStatusClass = item => {
+  if (activeTaskOf(item.id)) return 'processing'
+  return mediaStatusClass(item.status)
+}
+const cardStatusLabel = item => {
+  const task = activeTaskOf(item.id)
+  if (task) return task.type === 'ai' ? 'ANALYZING' : 'TRANSCRIBING'
+  return mediaStatusLabel(item.status)
+}
+const cardStatusTitle = item => {
+  const task = activeTaskOf(item.id)
+  if (!task) return null
+  return task.type === 'ai'
+    ? 'AI 分析正在后台执行，完成后会提示你'
+    : '文字提取正在后台执行，完成后会提示你'
+}
+const actionTitle = (item, label) => item.status === 'COMPLETED'
+  ? null
+  : `视频尚未处理完成，暂时无法${label}`
 
-const uploadStatusText = computed(() => {
-  const labels = {
-    [UPLOAD_STATES.HASHING]: '正在计算文件 MD5...',
-    [UPLOAD_STATES.UPLOADING]: '正在并发上传分片...',
-    [UPLOAD_STATES.RETRYING]: `服务暂时不可用，正在第 ${uploadTask.value.retryCount} 次重试...`,
-    [UPLOAD_STATES.PAUSED]: `上传已暂停：${uploadTask.value.lastError || '可在服务恢复后继续'}`,
-    [UPLOAD_STATES.MERGING]: '分片完成，正在校验并合并...',
-    [UPLOAD_STATES.FAILED]: uploadTask.value.lastError || '上传失败'
-  }
-  return labels[uploadTask.value.state] || '正在处理上传任务...'
+const elapsedLabel = computed(() => {
+  const total = elapsedSeconds.value
+  if (total < 1) return ''
+  const minutes = String(Math.floor(total / 60)).padStart(2, '0')
+  return `${minutes}:${String(total % 60).padStart(2, '0')}`
 })
 
-const canPauseUpload = computed(() => [
-  UPLOAD_STATES.HASHING,
-  UPLOAD_STATES.UPLOADING,
-  UPLOAD_STATES.RETRYING,
-  UPLOAD_STATES.MERGING
-].includes(uploadTask.value.state))
+const loadingHeadline = computed(() => {
+  const fallback = sidebar.value.type === 'ai'
+    ? 'Agent 正在分析视频证据'
+    : '正在识别视频语音'
+  const headline = sidebar.value.statusMessage || fallback
+  // 用“已等待”而不是“已运行”：接管历史任务时计时是从打开面板算起的。
+  return elapsedLabel.value ? `${headline} · 已等待 ${elapsedLabel.value}` : headline
+})
 
-const canResumeUpload = computed(() => [
-  UPLOAD_STATES.PAUSED,
-  UPLOAD_STATES.FAILED
-].includes(uploadTask.value.state))
+const transcriptMeta = computed(() => {
+  const length = sidebar.value.content?.length || 0
+  if (!length) return ''
+  return `共 ${length.toLocaleString('zh-CN')} 字`
+})
 
-// Markdown 解析
-// 清理模型思考标签，并将分析内容渲染为 Markdown HTML。
-const renderedMarkdown = computed(() => {
-  if (!sidebar.value.content) return ''
-  let cleanText = sidebar.value.content.replace(/<think>[\s\S]*?<\/think>/gi, "")
-  if (cleanText.includes("</think>")) cleanText = cleanText.split("</think>").pop()
-  if (!cleanText.trim()) cleanText = sidebar.value.content
-  return marked.parse(cleanText)
+const resumeHint = computed(() => {
+  const target = resumableFile.value
+  if (!target) return ''
+  const { done, total } = resumableChunks.value
+  const progress = total ? `已完成 ${Math.round((done / total) * 100)}%` : '已保留上传进度'
+  return `${target.name} ${progress}，可继续未完成的上传`
 })
 
 // --- 核心业务逻辑 ---
 
-// 处理文件选择框变化，校验登录状态后立即开始上传。
-const handleFileChange = async (e) => {
-  if (!currentUser.value) {
-    e.target.value = ''
-    showMsg('⚠️ 权限受限：请先登录系统', true)
-    openAuthModal()
-    return
-  }
-  const selectedFile = e.target.files[0]
-  if (!selectedFile) return
-  file.value = selectedFile
-  videoUrl.value = ''
-  await uploadFile()
+const handleDragEnter = () => {
+  dragDepth += 1
+  isDragOver.value = true
 }
 
-// 处理拖拽上传，仅接受浏览器识别为视频的文件。
-const handleDrop = async (e) => {
+// 拖过子元素也会触发 dragleave，用进出计数避免提示文案反复闪烁。
+const handleDragLeave = () => {
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (!dragDepth) isDragOver.value = false
+}
+
+const resetDragState = () => {
+  dragDepth = 0
   isDragOver.value = false
+}
+
+/** 统一入口：登录、格式、体积三道校验全部在进入上传态之前完成。 */
+const startUpload = async (selectedFile, extraFileCount = 0) => {
+  if (uploading.value) {
+    showMsg('已有上传任务在进行，请等当前任务结束', true)
+    return
+  }
   if (!currentUser.value) {
     showMsg('⚠️ 权限受限：请先登录系统', true)
     openAuthModal()
     return
   }
-  const droppedFiles = e.dataTransfer.files
-  if (!droppedFiles || droppedFiles.length === 0) return
-  const selectedFile = droppedFiles[0]
-  if (!selectedFile.type.startsWith('video/')) {
-    showMsg('⚠️ 仅支持上传视频文件', true)
+  if (!selectedFile) return
+  const invalid = validateVideoFile(selectedFile)
+  if (invalid) {
+    showMsg(`⚠️ ${invalid}`, true)
     return
+  }
+  if (extraFileCount > 0) {
+    showMsg(`一次只处理一个视频，已选择 ${selectedFile.name}，其余 ${extraFileCount} 个已忽略`)
   }
   file.value = selectedFile
   videoUrl.value = ''
   await uploadFile()
 }
 
-// 计算内容哈希后执行秒传检查、三路并发分片上传和幂等合并。
-const uploadFile = async () => {
-  if (!file.value) return
-  try {
-    await uploadManager.start(file.value, currentUser.value.id)
-    if (uploadTask.value.state === UPLOAD_STATES.COMPLETED) {
-      showMsg(uploadTask.value.deduplicated ? '✅ 文件已存在，秒传完成' : '✅ 本地上传完成')
-      await fetchList()
-    } else if (uploadTask.value.state === UPLOAD_STATES.PAUSED) {
-      showMsg(`⚠️ 自动重试已达到上限，上传已暂停：${uploadTask.value.lastError || '请稍后继续'}`, true)
-    } else if (uploadTask.value.state === UPLOAD_STATES.FAILED) {
-      showMsg('❌ 上传失败: ' + uploadTask.value.lastError, true)
-    }
-  } catch (error) {
-    console.error(error)
-    showMsg('❌ 上传失败: ' + error.message, true)
+const handleFileChange = async (e) => {
+  const selected = e.target.files
+  await startUpload(selected?.[0], Math.max(0, (selected?.length || 0) - 1))
+  e.target.value = ''
+}
+
+const handleDrop = async (e) => {
+  resetDragState()
+  const dropped = e.dataTransfer?.files
+  if (!dropped?.length) return
+  await startUpload(dropped[0], dropped.length - 1)
+}
+
+const buildUploadWarning = progress => {
+  if (progress.retryingCount) {
+    return `网络不稳定，正在重试 ${progress.retryingCount} 个分片（第 ${progress.retryAttempt}/${progress.retryMaxAttempts} 次）`
+  }
+  if (progress.resumedChunks) {
+    return `已续传：跳过 ${progress.resumedChunks} 个此前完成的分片`
+  }
+  return ''
+}
+
+const applyUploadProgress = progress => {
+  lastUploadProgress = progress
+  const merging = progress.phase === 'merging'
+  const detail = [`${formatBytes(progress.uploadedBytes)} / ${formatBytes(progress.totalBytes)}`]
+  detail.push(`分片 ${progress.completedChunks}/${progress.totalChunks}`)
+  if (!merging && progress.bytesPerSecond) {
+    detail.push(`${formatBytes(progress.bytesPerSecond)}/s`)
+    const eta = formatDurationText(progress.etaSeconds)
+    if (eta) detail.push(`剩余约 ${eta}`)
+  }
+  uploadProgress.value = {
+    label: merging ? '分片已全部送达，正在服务端合并' : '正在安全上传',
+    filename: file.value?.name || uploadProgress.value.filename,
+    percent: progress.percent,
+    detail: detail.join(' · '),
+    warning: buildUploadWarning(progress)
   }
 }
 
-const pauseUpload = () => {
-  uploadManager.pause()
-  showMsg('上传已暂停')
+const rememberResumableUpload = target => {
+  if (!target || !hasUploadProgress(target, currentUser.value?.id)) {
+    resumableFile.value = null
+    return
+  }
+  resumableFile.value = target
+  resumableChunks.value = {
+    done: lastUploadProgress.completedChunks || 0,
+    total: lastUploadProgress.totalChunks || 0
+  }
+}
+
+const uploadFile = async () => {
+  const target = file.value
+  if (!target) return
+  if (DEMO_MODE) {
+    showMsg('演示模式：已模拟完成分片上传')
+    return
+  }
+
+  const controller = new AbortController()
+  const requestVersion = ++uploadRequestVersion
+  const isCurrentSession = captureAuthSession()
+  const isCurrentUpload = () => requestVersion === uploadRequestVersion && isCurrentSession()
+  uploadAbort.value = controller
+  uploading.value = true
+  resumableFile.value = null
+  lastUploadProgress = {}
+  const uploadUserId = currentUser.value?.id
+  uploadProgress.value = {
+    label: hasUploadProgress(target, uploadUserId) ? '正在核对已上传分片' : '准备分片上传',
+    filename: target.name,
+    percent: 0,
+    detail: `0 B / ${formatBytes(target.size)}`,
+    warning: ''
+  }
+
+  try {
+    const uploadedMedia = await uploadVideoInChunks(target, progress => {
+      if (isCurrentUpload()) applyUploadProgress(progress)
+    }, controller.signal, uploadUserId)
+    if (!isCurrentUpload()) return
+    resumableFile.value = null
+    showMsg(`✅ ${target.name} 上传完成`)
+    await fetchList({ notify: true })
+    if (!isCurrentUpload()) return
+    openAgent(uploadedMedia)
+  } catch (error) {
+    if (!isCurrentUpload()) return
+    rememberResumableUpload(target)
+    if (error?.aborted) {
+      showMsg('上传已取消，进度已保留，可点“继续上传”接着传')
+      return
+    }
+    console.error(error)
+    showMsg(
+      resumableFile.value
+        ? `❌ 上传中断：${error.message}（进度已保留，可继续上传）`
+        : `❌ 上传失败：${error.message}`,
+      true
+    )
+  } finally {
+    if (isCurrentUpload()) {
+      uploading.value = false
+      uploadAbort.value = null
+      file.value = null
+    }
+  }
+}
+
+const cancelUpload = () => {
+  if (!uploadAbort.value) return
+  uploadProgress.value = { ...uploadProgress.value, label: '正在取消上传', warning: '' }
+  uploadAbort.value.abort()
 }
 
 const resumeUpload = async () => {
-  await uploadManager.resume()
-  if (uploadTask.value.state === UPLOAD_STATES.COMPLETED) {
-    showMsg('✅ 上传已恢复并完成')
-    await fetchList()
-  }
+  const target = resumableFile.value
+  if (!target || uploading.value) return
+  file.value = target
+  await uploadFile()
 }
 
-const cancelUpload = async () => {
-  try {
-    await uploadManager.cancel()
-    file.value = null
-    showMsg('上传任务已取消')
-  } catch (error) {
-    showMsg('❌ 取消上传失败: ' + error.message, true)
-  }
+const discardResumableUpload = () => {
+  forgetUploadProgress(resumableFile.value, currentUser.value?.id)
+  resumableFile.value = null
+  resumableChunks.value = { done: 0, total: 0 }
+  showMsg('已清除保留的上传进度，下次将从头开始')
 }
 
-// 【链接上传 - 修复版】
-// 请求后端下载外部视频 URL 并保存到当前用户媒体库。
 const handleUrlUpload = async () => {
-  if (!videoUrl.value) return
+  const normalizedUrl = videoUrl.value.trim()
+  if (!normalizedUrl) return
+  if (uploading.value) {
+    showMsg('已有上传任务在进行，请等当前任务结束', true)
+    return
+  }
+  if (DEMO_MODE) {
+    videoUrl.value = ''
+    showMsg('演示模式：已模拟完成链接解析')
+    return
+  }
 
   if (!currentUser.value) {
     showMsg('⚠️ 权限受限：请先登录系统', true)
@@ -497,110 +822,326 @@ const handleUrlUpload = async () => {
     return
   }
 
-  // 简单校验链接
-  if (!videoUrl.value.startsWith('http')) {
+  let parsedUrl
+  try {
+    parsedUrl = new URL(normalizedUrl)
+  } catch {
+    parsedUrl = null
+  }
+  if (!parsedUrl || !['http:', 'https:'].includes(parsedUrl.protocol)) {
     showMsg('⚠️ 请输入合法的 http/https 链接', true)
     return
   }
 
   uploading.value = true
+  const requestVersion = ++uploadRequestVersion
+  const isCurrentSession = captureAuthSession()
+  const isCurrentUpload = () => requestVersion === uploadRequestVersion && isCurrentSession()
+  uploadProgress.value = {
+    label: '正在解析视频链接',
+    filename: parsedUrl.hostname,
+    percent: null,
+    detail: '服务端正在拉取源视频，时长取决于源站速度',
+    warning: ''
+  }
+  messageIsError.value = false
   message.value = '正在解析链接并极速下载 (低码率模式)...'
 
   const formData = new FormData()
-  formData.append('url', videoUrl.value)
+  formData.append('url', normalizedUrl)
 
   try {
-    await apiFetch('/media/upload-url', {
+    const res = await apiRequest('/media/upload-url', {
       method: 'POST',
       body: formData
     })
+    if (!res.ok) throw new Error(await res.text())
+    const uploadedMedia = await res.json()
+    if (!isCurrentUpload()) return
 
     showMsg('✅ 链接资源已入库')
     videoUrl.value = ''
-    fetchList()
+    await fetchList({ notify: true })
+    if (!isCurrentUpload()) return
+    openAgent(uploadedMedia)
   } catch (error) {
     console.error(error)
-    // 提取后端传来的具体错误信息
+    if (!isCurrentUpload()) return
     let errMsg = error.message
     if (errMsg.includes("Unsupported URL")) errMsg = "不支持该平台链接"
     showMsg('❌ 解析失败: ' + errMsg, true)
   } finally {
-    uploading.value = false
+    if (isCurrentUpload()) uploading.value = false
   }
 }
 
-// 统一更新页面提示信息和错误状态。
+/** 成功提示自动消失；错误提示保留到用户点掉，避免关键失败原因 4 秒后就没了。 */
 const showMsg = (msg, isError = false) => {
+  clearTimeout(messageTimer)
+  messageTimer = null
   message.value = msg
-  setTimeout(() => { if(message.value === msg) message.value = '' }, 4000)
+  messageIsError.value = isError
+  if (isError) return
+  messageTimer = setTimeout(() => {
+    if (message.value !== msg) return
+    message.value = ''
+    messageIsError.value = false
+  }, MESSAGE_TIMEOUT_MS)
 }
 
-// 获取当前用户的媒体列表，并恢复未结束任务的轮询。
-const fetchList = async () => {
-  try {
-    let url = '/media/list'
-    if (currentUser.value) {
-      // 【核心修改】加一个 _t 时间戳，强制浏览器每次都发新请求，不许读缓存！
-      const timestamp = new Date().getTime()
-      url += `?_t=${timestamp}`
+const dismissMessage = () => {
+  if (!messageIsError.value) return
+  clearTimeout(messageTimer)
+  messageTimer = null
+  message.value = ''
+  messageIsError.value = false
+}
 
-      const data = await apiFetch(url)
-      // 倒序排列，新的在前面
-      list.value = data.reverse()
-    } else {
-      list.value = []
-    }
+const fetchList = async ({ notify = false } = {}) => {
+  const requestVersion = ++listRequestVersion
+  const isCurrentSession = captureAuthSession()
+  const isCurrentRequest = () => requestVersion === listRequestVersion && isCurrentSession()
+  if (DEMO_MODE) return list.value
+  if (!currentUser.value) {
+    list.value = []
+    return list.value
+  }
+  listLoading.value = true
+  listError.value = ''
+  try {
+    // 带时间戳绕开浏览器缓存，避免删除/新增之后列表还是旧的。
+    const res = await apiRequest(`/media/list?_t=${Date.now()}`)
+    if (res.status === 401) return null
+    if (!res.ok) throw new Error('加载视频列表失败')
+    const media = await res.json()
+    if (!isCurrentRequest()) return null
+    list.value = media
   } catch (error) {
+    if (!isCurrentRequest()) return null
     console.error(error)
+    listError.value = '视频资料库加载失败，请稍后重试'
+    if (notify) showMsg('视频资料库加载失败，请稍后刷新', true)
+    return null
+  } finally {
+    if (isCurrentRequest()) listLoading.value = false
   }
+  return list.value
 }
 
-// 二次确认后删除媒体记录并刷新列表。
-const deleteItem = async (item) => {
-  if (!confirm(`确认要永久删除 "${item.filename}" 吗？`)) return
+const mediaStatusClass = status => ['COMPLETED', 'PROCESSING', 'FAILED'].includes(status)
+  ? status.toLowerCase()
+  : 'unknown'
+const mediaStatusLabel = status => ({
+  COMPLETED: 'READY',
+  PROCESSING: 'PROCESSING',
+  FAILED: 'FAILED'
+})[status] || 'PENDING'
+
+const {
+  sidebar,
+  goalPresets,
+  analysisModes,
+  traceStages,
+  renderedMarkdown,
+  transcribe,
+  closeSidebar,
+  openAgent,
+  submitAgent,
+  startNewAnalysis,
+  showDemoResult,
+  startPlanEdit,
+  cancelPlanEdit,
+  addPlanTask,
+  removePlanTask,
+  rerunWithPlan,
+  submitFollowUp,
+  searchEvidence,
+  sendFeedback,
+  retryPlayback,
+  handlePlaybackError,
+  resetWorkspace,
+  discardMediaWorkspace,
+  formatPercent
+} = useAnalysisWorkspace({
+  demoMode: DEMO_MODE,
+  taskStreams,
+  showMessage: showMsg,
+  refreshMediaList: fetchList,
+  findMediaItem: id => list.value.find(item => item.id === id),
+  onAnswerAppended: () => scrollToLatestAnswer()
+})
+
+/** 追问的答案追加在长文末尾，主动滚过去，否则用户会以为“点了没反应”。 */
+const scrollToLatestAnswer = async () => {
+  await nextTick()
+  const container = sidebarBody.value?.querySelector('.markdown-content')
+  if (!container) return
+  const headings = container.querySelectorAll('h2, h3')
+  const anchor = headings.length ? headings[headings.length - 1] : container.lastElementChild
+  anchor?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+const seekVideo = seconds => {
+  if (!Number.isFinite(seconds)) return
+  const player = videoPlayer.value
+  if (!player) {
+    if (sidebar.value.playbackError) {
+      showMsg('原视频加载失败，无法跳转，可先点“重新加载”', true)
+    } else if (sidebar.value.playbackLoading) {
+      showMsg('原视频还在载入，稍等一下再点这个时间戳')
+    } else {
+      showMsg('这个视频暂时没有可播放的原片，无法跳转', true)
+    }
+    return
+  }
+  if (player.readyState === 0) {
+    player.addEventListener('loadedmetadata', () => seekVideo(seconds), { once: true })
+    return
+  }
+  const duration = player.duration
+  const maxTime = Number.isFinite(duration) ? Math.max(0, duration - 0.1) : Number.MAX_SAFE_INTEGER
+  player.currentTime = Math.min(Math.max(0, seconds), maxTime)
+  player.play().catch(() => {})
+  player.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+const seekEvidence = event => {
+  const link = event.target.closest('a[href^="#video-t="]')
+  if (!link) return
+  event.preventDefault()
+  seekVideo(Number(link.getAttribute('href').split('=')[1]))
+}
+
+const seekToEvidence = timestampMs => seekVideo(Number(timestampMs) / 1000)
+const formatEvidenceTime = timestampMs => {
+  const seconds = Math.max(0, Math.floor(Number(timestampMs) / 1000))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const time = `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+  return hours ? `${String(hours).padStart(2, '0')}:${time}` : time
+}
+
+/** Clipboard API 在非 HTTPS 环境不可用，这里保留一条降级路径，避免“复制失败”变成死路。 */
+const copyToClipboard = async text => {
   try {
-    const url = `/media/delete?id=${item.id}`
-    await apiFetch(url, { method: 'DELETE' })
-    showMsg('文件已销毁')
-    list.value = list.value.filter(i => i.id !== item.id)
-  } catch (e) {
-    showMsg('❌ 删除请求失败', true)
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    // 继续走下面的降级方案。
+  }
+  try {
+    const scratch = document.createElement('textarea')
+    scratch.value = text
+    scratch.setAttribute('readonly', '')
+    scratch.style.position = 'fixed'
+    scratch.style.top = '0'
+    scratch.style.opacity = '0'
+    document.body.appendChild(scratch)
+    scratch.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(scratch)
+    return copied
+  } catch {
+    return false
   }
 }
 
-// 将后端时间字符串转换为本地展示格式。
+const copyResult = async () => {
+  const content = sidebar.value.content
+  if (!content) {
+    showMsg('还没有可复制的内容', true)
+    return
+  }
+  const label = sidebar.value.type === 'ai' ? '分析结果' : '转写全文'
+  if (await copyToClipboard(content)) showMsg(`${label}已复制`)
+  else showMsg('复制失败，请手动选中内容后复制', true)
+}
+
+const resultFileBaseName = () => {
+  const title = sidebar.value.title || ''
+  const raw = title.split(' · ').slice(1).join(' · ') || title
+  const cleaned = raw.replace(/\.[^/.]+$/, '').replace(/[\\/:*?"<>|]/g, '_').trim()
+  return cleaned || (sidebar.value.type === 'ai' ? 'analysis' : 'transcript')
+}
+
+const downloadResult = () => {
+  const content = sidebar.value.content
+  if (!content) {
+    showMsg('还没有可导出的内容', true)
+    return
+  }
+  const isMarkdown = sidebar.value.type === 'ai'
+  const blob = new Blob([content], {
+    type: isMarkdown ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8'
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${resultFileBaseName()}.${isMarkdown ? 'md' : 'txt'}`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  // 立刻 revoke 在部分浏览器会导致下载拿不到内容，延后一拍更稳。
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+  showMsg(`已导出 ${link.download}`)
+}
+
+const deleteItem = async (item) => {
+  if (DEMO_MODE) {
+    list.value = list.value.filter(i => i.id !== item.id)
+    discardMediaWorkspace(item.id)
+    showMsg('演示任务已移除')
+    return
+  }
+  if (deletingId.value) return
+  const runningTask = activeTaskOf(item.id)
+  const warning = runningTask
+    ? '\n\n注意：该视频还有任务正在后台执行，删除后这次的结果会丢失。'
+    : ''
+  if (!confirm(`确认要永久删除 "${item.filename}" 吗？${warning}`)) return
+  deletingId.value = item.id
+  const isCurrentSession = captureAuthSession()
+  try {
+    const res = await apiRequest(`/media/delete?id=${item.id}`, { method: 'DELETE' })
+    const text = await res.text()
+    if (!isCurrentSession()) return
+    if (res.ok) {
+      listRequestVersion += 1
+      listLoading.value = false
+      showMsg(`已删除 ${item.filename}`)
+      list.value = list.value.filter(i => i.id !== item.id)
+      discardMediaWorkspace(item.id)
+    } else {
+      showMsg('❌ ' + text, true)
+    }
+  } catch (e) {
+    if (!isCurrentSession()) return
+    showMsg('❌ 删除请求失败', true)
+  } finally {
+    if (isCurrentSession()) deletingId.value = null
+  }
+}
+
 const formatTime = (timeStr) => {
   if (!timeStr) return '--'
   const date = new Date(timeStr)
+  if (Number.isNaN(date.getTime())) return '--'
   return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
-// 播放前临时获取授权地址，媒体列表中不保存对象存储路径。
-const playMedia = async (item) => {
-  const playbackWindow = window.open('', '_blank')
-  try {
-    const url = await uploadTransport.accessUrl(item.id)
-    if (playbackWindow) {
-      playbackWindow.opener = null
-      playbackWindow.location.replace(url)
-    } else {
-      window.location.assign(url)
-    }
-  } catch (error) {
-    playbackWindow?.close()
-    showMsg('❌ 获取播放地址失败: ' + error.message, true)
-  }
-}
-
-// 请求后端生成音频并触发浏览器下载。
 const downloadAudio = async (item) => {
-  const url = `/debug/download?id=${item.id}`
+  if (DEMO_MODE) {
+    showMsg(`演示模式：${item.filename} 音频已准备`)
+    return
+  }
   let fileName = item.filename || 'audio.mp3';
   fileName = fileName.replace(/\.[^/.]+$/, "") + ".mp3";
   try {
     showMsg('正在转码并下载...')
-    const res = await apiFetch(url, { raw: true })
-    if(!res.ok) throw new Error("Fail")
+    const res = await apiRequest(`/analysis/download?id=${item.id}`)
+    // 失败时后端返回的是 JSON 信封，api.js 会把 message 解包给 text()，
+    // 这里读出来向上抛，避免把“视频不存在 / 无权访问 / 转码失败”统一显示成同一句话。
+    if (!res.ok) throw new Error((await res.text()) || '请稍后重试')
     const blob = await res.blob()
     const downloadUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -612,263 +1153,63 @@ const downloadAudio = async (item) => {
     window.URL.revokeObjectURL(downloadUrl)
     showMsg('✅ 下载完成')
   } catch (e) {
-    alert("下载失败")
+    showMsg('音频下载失败：' + (e?.message || '请稍后重试'), true)
   }
 }
 
-// 提交语音转写任务，并开始查询异步处理状态。
-const transcribe = async (id) => {
-  const item = list.value.find(i => i.id === id)
-  if (item && item.transcriptText) {
-    openSidebar('text', '全量文字提取')
-    sidebar.value.content = item.transcriptText
-    sidebar.value.loading = false
-    return
-  }
-  if (pollingTimers.value[id] && pollingTimers.value[id].type === 'text') {
-    openSidebar('text', '全量文字提取')
-    sidebar.value.loading = true
-    sidebar.value.content = "📝 文字提取正在后台进行中..."
-    return
-  }
-  openSidebar('text', '全量文字提取')
-  sidebar.value.loading = true
-  sidebar.value.content = "📝 提取任务已提交，正在识别语音流..."
-  try {
-    await apiFetch(`/debug/transcribe?id=${id}`)
-    startPolling(id, 'text')
-  } catch (e) {
-    sidebar.value.content = "Error: " + e
-    sidebar.value.loading = false
-  }
+const restoreFocus = element => {
+  if (element?.isConnected && typeof element.focus === 'function') element.focus()
 }
 
-// 目标可编辑；模式始终使用后端默认的 GENERAL。
-const openAnalysis = async (id) => {
-  analysisMediaId.value = id
-  analysisGoal.value = analysisGoals.value[id] || DEFAULT_ANALYSIS_GOAL
-  analysisBusy.value = pollingTimers.value[id]?.type === 'ai'
-  openSidebar('ai', 'AI 智能总结')
-  sidebar.value.loading = false
-  if (analysisBusy.value) {
-    sidebar.value.content = '正在后台分析视频'
-  } else {
-    await loadAnalysisResult()
-  }
-}
-
-const loadAnalysisResult = async () => {
-  const id = analysisMediaId.value
-  const goal = analysisGoal.value.trim()
-  if (!id || !goal || analysisBusy.value) return
-  try {
-    const params = new URLSearchParams({ id: String(id), goal })
-    const task = await apiFetch(`/analysis/analysis-status?${params}`)
-    if (analysisMediaId.value !== id || analysisGoal.value.trim() !== goal || analysisBusy.value) return
-    sidebar.value.content = task.state === 'COMPLETED'
-      ? task.result
-      : '该目标暂无分析结果，点击“开始分析”创建任务。'
-  } catch (error) {
-    if (analysisMediaId.value === id) sidebar.value.content = error.message
-  }
-}
-
-const submitAnalysis = async () => {
-  const id = analysisMediaId.value
-  const goal = analysisGoal.value.trim()
-  if (!id || !goal || analysisBusy.value) return
-  analysisGoals.value[id] = goal
-  analysisBusy.value = true
-  sidebar.value.loading = true
-  sidebar.value.content = '正在提交分析任务...'
-
-  try {
-    const params = new URLSearchParams({ id: String(id), goal })
-    await apiFetch(`/analysis/ai?${params}`, { method: 'POST' })
-    const controller = new AbortController()
-    pollingTimers.value[id] = {
-      type: 'ai',
-      controller,
-      goal
-    }
-    const terminal = await pollAnalysisTask({
-      mediaId: id,
-      goal,
-      apiFetch,
-      signal: controller.signal,
-      onUpdate: (task) => {
-        if (analysisMediaId.value === id && analysisGoal.value.trim() === goal) {
-          sidebar.value.loading = false
-          sidebar.value.content = task.result || task.message || '正在分析视频'
-        }
-      }
-    })
-    if (terminal.state === 'COMPLETED') {
-      await fetchList()
-      if (analysisMediaId.value === id) sidebar.value.content = terminal.result || '分析已完成'
-      sidebar.value.loading = false
-      showMsg('✅ AI 分析完成')
-    } else {
-      if (analysisMediaId.value === id) sidebar.value.content = terminal.message || `任务已结束：${terminal.state}`
-      sidebar.value.loading = false
-      showMsg(`⚠️ AI 任务已结束：${terminal.state}`, true)
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') {
-      if (analysisMediaId.value === id) sidebar.value.content = "Error: " + e.message
-      sidebar.value.loading = false
-      showMsg('❌ AI 分析任务提交或查询失败', true)
-    }
-  } finally {
-    delete pollingTimers.value[id]
-    if (analysisMediaId.value === id) analysisBusy.value = false
-  }
-}
-
-// 定时刷新媒体状态，任务结束后停止并展示结果。
-const startPolling = (id, type) => {
-  // 清理旧定时器
-  if (pollingTimers.value[id]) clearInterval(pollingTimers.value[id].timer)
-  console.log(`[轮询] 开始监听任务 ID: ${id}, 类型: ${type}`)
-
-  const timer = setInterval(async () => {
-    // 1. 强制刷新列表 (带时间戳防止缓存)
-    await fetchList()
-    const item = list.value.find(i => i.id === id)
-    if (!item) return
-
-    let isFinished = false
-    let result = ''
-
-    if (type === 'ai') {
-      const text = item.aiSummary || ''
-
-      // 【核心修改】纯文本判断逻辑，绝对不使用 Emoji
-      // 条件1: 成功 (包含 Markdown 的标题特征 "##")
-      const isSuccess = text.includes("##");
-      // 条件2: 失败 (包含错误关键词)
-      const isError = text.includes("失败") || text.includes("Error") || text.includes("超时") || text.includes("500");
-
-      // 只要是成功或失败，都视为“结束”，停止轮询
-      if (isSuccess || isError) {
-        isFinished = true
-        result = text
-      }
-
-    } else if (type === 'text') {
-      const text = item.transcriptText || ''
-      // 文字提取同理：如果有内容且长度足够，或者报错，就停止
-      if (text && (text.length > 10 || text.includes("失败"))) {
-        isFinished = true
-        result = text
-      }
-    }
-
-    // 2. 结算
-    if (isFinished) {
-      // 如果侧边栏正开着，更新内容
-      if (sidebar.value.visible && sidebar.value.title.includes(type === 'ai' ? 'AI' : '文字')) {
-        sidebar.value.content = result
-        sidebar.value.loading = false
-      }
-
-      // 只有成功才提示完成，报错则提示警告
-      if (result.includes("失败") || result.includes("Error")) {
-        showMsg("⚠️ 任务结束，但存在错误", true)
-      } else {
-        showMsg("✅ 任务完成")
-      }
-
-      clearInterval(timer)
-      delete pollingTimers.value[id]
-    }
-  }, 3000) // 3秒轮询一次
-
-  pollingTimers.value[id] = { timer, type }
-
-  // 5分钟强制兜底停止
-  setTimeout(() => {
-    if (pollingTimers.value[id]) {
-      clearInterval(pollingTimers.value[id].timer)
-      delete pollingTimers.value[id]
-    }
-  }, 300000)
-}
-
-// 打开结果侧栏并设置当前内容类型和标题。
-const openSidebar = (type, title) => {
-  sidebar.value.visible = true
-  sidebar.value.type = type
-  sidebar.value.title = title
-  sidebar.value.loading = true
-  sidebar.value.content = ''
-}
-// 关闭分析结果侧栏。
-const openVideoQa = (item) => {
-  openSidebar('qa', `视频问答：${item.filename}`)
-  sidebar.value.loading = false
-  qa.value = {
-    mediaId: item.id,
-    conversationId: qa.value.mediaId === item.id ? qa.value.conversationId : null,
-    question: '',
-    messages: qa.value.mediaId === item.id ? qa.value.messages : [],
-    loading: false
-  }
-}
-
-const submitVideoQuestion = async () => {
-  const question = qa.value.question.trim()
-  if (!question || !qa.value.mediaId || qa.value.loading) return
-  qa.value.messages.push({ role: 'user', content: question })
-  qa.value.question = ''
-  qa.value.loading = true
-  try {
-    const response = await askVideoQuestion(qa.value.mediaId, {
-      conversationId: qa.value.conversationId,
-      question
-    })
-    qa.value.conversationId = response.conversationId
-    qa.value.messages.push({
-      role: 'assistant',
-      content: response.answer,
-      citations: response.citations || []
-    })
-  } catch (error) {
-    qa.value.messages.push({
-      role: 'assistant',
-      content: '问答失败：' + (error.message || '服务暂时不可用'),
-      citations: []
-    })
-  } finally {
-    qa.value.loading = false
-  }
-}
-
-const formatTimestamp = (timestampMs) => {
-  if (timestampMs === null || timestampMs === undefined) return '--:--'
-  const totalSeconds = Math.floor(timestampMs / 1000)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
-const closeSidebar = () => { sidebar.value.visible = false }
-
-// 打开登录或注册弹窗。
 const openAuthModal = () => {
+  if (showAuthModal.value) return
+  focusBeforeAuth = document.activeElement
   showAuthModal.value = true
   authMessage.value = ''
   authForm.value = { username: '', password: '', nickname: '' }
 }
-// 关闭认证弹窗。
-const closeAuthModal = () => { showAuthModal.value = false }
-// 在登录和注册模式之间切换，并清除上次提示。
-const switchAuthMode = () => {
-  authMode.value = authMode.value === 'login' ? 'register' : 'login'
-  authMessage.value = ''
+const closeAuthModal = () => {
+  authRequestVersion += 1
+  authLoading.value = false
+  showAuthModal.value = false
+  restoreFocus(focusBeforeAuth)
+  focusBeforeAuth = null
 }
-// 提交登录或注册表单，并在成功后保存当前用户。
+const closeActiveOverlay = () => {
+  if (showAuthModal.value) closeAuthModal()
+  else if (sidebar.value.visible) closeSidebar()
+}
+const handleKeydown = event => {
+  if (event.key === 'Escape') closeActiveOverlay()
+}
+
+/** 弹窗内循环 Tab，键盘用户不会一路跳到被遮住的背景里。 */
+const trapAuthFocus = event => {
+  trapPanelFocus(event, authPanel.value)
+}
+const trapPanelFocus = (event, panel) => {
+  if (event.key !== 'Tab' || !panel) return
+  const focusable = [...panel.querySelectorAll('button, input, textarea, select, a[href], summary, [tabindex]:not([tabindex="-1"])')]
+    .filter(element => !element.disabled && element.offsetParent !== null)
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  const active = document.activeElement
+  if (event.shiftKey && (active === first || active === panel || !panel.contains(active))) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+const switchAuthMode = ({ keepMessage = false } = {}) => {
+  authMode.value = authMode.value === 'login' ? 'register' : 'login'
+  if (!keepMessage) authMessage.value = ''
+}
 const handleAuth = async () => {
+  if (authLoading.value) return
   if (!authForm.value.username || !authForm.value.password) {
     authMessage.value = '请输入完整的账号和密码'
     authError.value = true
@@ -876,64 +1217,178 @@ const handleAuth = async () => {
   }
   authLoading.value = true
   authMessage.value = ''
-  const endpoint = authMode.value === 'login' ? '/user/login' : '/user/register'
+  const requestVersion = ++authRequestVersion
+  const mode = authMode.value
+  const endpoint = mode === 'login' ? '/user/login' : '/user/register'
   try {
-    const data = await apiFetch(endpoint, {
+    const res = await apiRequest(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authForm.value)
     })
-    if (authMode.value === 'login') {
-      currentUser.value = data.user
-      setToken(data.token)
-      localStorage.setItem('user', JSON.stringify(data.user))
+    if (requestVersion !== authRequestVersion) return
+    if (!res.ok) {
+      const message = await res.text()
+      if (requestVersion !== authRequestVersion) return
+      authMessage.value = message || `请求失败（HTTP ${res.status}）`
+      authError.value = true
+      return
+    }
+    const data = await res.json().catch(() => null)
+    if (requestVersion !== authRequestVersion) return
+    if (!data?.userInfo) {
+      authMessage.value = '服务端返回异常，请稍后重试'
+      authError.value = true
+      return
+    }
+    if (mode === 'login') {
+      setAuthToken(data.token)
+      currentUser.value = data.userInfo
+      localStorage.setItem('user', JSON.stringify(data.userInfo))
       closeAuthModal()
-      showMsg(`欢迎回来，${data.user.nickname}`)
-      fetchList()
+      showMsg(`欢迎回来，${data.userInfo.nickname}`)
+      fetchList({ notify: true })
     } else {
-      authMessage.value = '注册成功，请直接登录'
+      authMessage.value = '注册成功，账号密码已保留，直接点“立即登录”即可'
       authError.value = false
-      setTimeout(() => switchAuthMode(), 1000)
+      switchAuthMode({ keepMessage: true })
     }
   } catch (e) {
+    if (requestVersion !== authRequestVersion) return
     console.error(e)
-    authMessage.value = e.message || '网络连接错误'
+    authMessage.value = e?.message || '网络连接错误'
     authError.value = true
   } finally {
-    authLoading.value = false
+    if (requestVersion === authRequestVersion) authLoading.value = false
   }
 }
-// 清除本地登录信息和用户相关页面状态。
-const logout = () => {
-  void uploadManager.cancel()
+/** 退出与登录失效走同一套清理，避免两处漏掉不同的字段。 */
+const resetSessionState = () => {
+  uploadRequestVersion += 1
+  listRequestVersion += 1
+  authRequestVersion += 1
+  authLoading.value = false
+  deletingId.value = null
+  listLoading.value = false
+  listError.value = ''
+  uploadAbort.value?.abort()
+  uploadAbort.value = null
+  taskStreams.stopAll()
+  resetWorkspace()
   currentUser.value = null
-  clearToken()
-  localStorage.removeItem('user')
   list.value = []
+  searchQuery.value = ''
+  videoUrl.value = ''
+  file.value = null
+  resumableFile.value = null
+  resumableChunks.value = { done: 0, total: 0 }
+  uploading.value = false
+  localStorage.removeItem('user')
+}
+
+const logout = () => {
+  if (hasAuthToken()) {
+    apiRequest('/user/logout', { method: 'POST' }).catch(() => {})
+  }
+  resetSessionState()
+  clearAuthToken()
   showMsg('已退出系统')
 }
+
+const handleAuthExpired = () => {
+  resetSessionState()
+  showMsg('登录状态已失效，请重新登录', true)
+  openAuthModal()
+}
+
+const handleOnline = () => {
+  isOffline.value = false
+  showMsg('网络已恢复，正在同步最新状态')
+  if (currentUser.value) fetchList()
+}
+
+const handleOffline = () => {
+  isOffline.value = true
+  showMsg('网络已断开：上传会自动重试，后台任务会在恢复后继续', true)
+}
+
+// 上传中误关标签页会白丢已传分片，这里让浏览器先问一句。
+const handleBeforeUnload = event => {
+  if (!uploading.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+// 打开弹层时挂上标记类，锁背景滚动的规则只在窄屏生效（见样式里的说明）。
+const overlayOpen = computed(() => sidebar.value.visible || showAuthModal.value)
+watch(overlayOpen, open => {
+  document.body.classList.toggle('overlay-open', open)
+})
+
+watch(() => sidebar.value.visible, async visible => {
+  if (visible) {
+    focusBeforeSidebar = document.activeElement
+    await nextTick()
+    sidebarPanel.value?.focus()
+    return
+  }
+  restoreFocus(focusBeforeSidebar)
+  focusBeforeSidebar = null
+})
+
+// 长任务给一个时间锚点，用户才不会怀疑是不是卡死了。
+watch(() => sidebar.value.loading, loading => {
+  clearInterval(elapsedTimer)
+  elapsedTimer = null
+  elapsedSeconds.value = 0
+  if (!loading) return
+  const startedAt = Date.now()
+  elapsedTimer = setInterval(() => {
+    elapsedSeconds.value = Math.floor((Date.now() - startedAt) / 1000)
+  }, 1000)
+})
+
 onMounted(() => {
+  window.addEventListener('auth-expired', handleAuthExpired)
+  window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('online', handleOnline)
+  window.addEventListener('offline', handleOffline)
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  if (DEMO_MODE) {
+    currentUser.value = { id: 1, nickname: 'Agent Demo' }
+    list.value = [DEMO_ITEM]
+    openAgent(DEMO_ITEM)
+    showDemoResult()
+    return
+  }
   const savedUser = localStorage.getItem('user')
-  if (savedUser && getToken()) {
+  if (savedUser && hasAuthToken()) {
     try {
       currentUser.value = JSON.parse(savedUser)
     } catch(e) {}
   }
-  fetchList()
+  fetchList({ notify: Boolean(currentUser.value) })
 })
-
-onBeforeUnmount(() => {
-  uploadManager.dispose()
-  Object.values(pollingTimers.value).forEach((polling) => {
-    polling.controller?.abort()
-    if (polling.timer) clearInterval(polling.timer)
-  })
+onUnmounted(() => {
+  uploadRequestVersion += 1
+  listRequestVersion += 1
+  authRequestVersion += 1
+  resetWorkspace()
+  window.removeEventListener('auth-expired', handleAuthExpired)
+  window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('online', handleOnline)
+  window.removeEventListener('offline', handleOffline)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  clearTimeout(messageTimer)
+  clearInterval(elapsedTimer)
+  uploadAbort.value?.abort()
+  document.body.classList.remove('overlay-open')
+  taskStreams.stopAll()
 })
 </script>
 
 <style>
-/* 确保字体引用在最上方 */
-@import url('https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@300;500;700&family=Syncopate:wght@700&display=swap');
+/* 字体已改为 index.html 里的非阻塞 <link> 加载，此处不再用 @import 阻塞首屏 CSSOM */
 
 :root {
   --bg-deep: #0b0c10;
@@ -956,6 +1411,7 @@ html, body, #app {
   overflow-x: hidden; background-color: var(--bg-deep);
 }
 
+
 .app-stage { position: relative; z-index: 1; width: 100%; min-height: 100vh; color: var(--text-main); font-family: 'Space Grotesk', 'Noto Sans SC', monospace; }
 
 .ambient-noise { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E"); pointer-events: none; z-index: -1; }
@@ -965,8 +1421,8 @@ html, body, #app {
 .navbar { position: sticky; top: 0; z-index: 100; width: 100%; padding: 1.2rem 0; background: rgba(11, 12, 16, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border-tech); }
 .nav-content { max-width: 1400px; margin: 0 auto; padding: 0 2rem; display: flex; justify-content: space-between; align-items: center; }
 .brand { display: flex; align-items: baseline; gap: 2px; }
-.brand-do { font-family: 'Dela Gothic One', sans-serif; font-size: 1.8rem; color: var(--text-main); letter-spacing: -1px; }
-.brand-video { font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 300; }
+.brand-video { font-family: 'Dela Gothic One', sans-serif; font-size: 1.8rem; color: var(--text-main); letter-spacing: -1px; }
+.brand-flow { font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 300; }
 .beta-badge { font-size: 0.7rem; font-weight: 700; background: var(--accent-lime); color: var(--text-inverse); padding: 2px 6px; border-radius: 2px; margin-left: 8px; transform: translateY(-4px); box-shadow: 0 0 5px var(--accent-lime); }
 
 .nav-controls { display: flex; align-items: center; gap: 15px; }
@@ -1069,27 +1525,41 @@ html, body, #app {
   background: var(--bg-card); position: relative; z-index: 50;
 }
 .busy-text { margin-top: 15px; color: var(--accent-lime); font-family: monospace; animation: pulse-lime 2s infinite; }
-.upload-progress-track { width: min(360px, 70%); height: 8px; margin-top: 16px; background: var(--border-tech); border-radius: 999px; overflow: hidden; }
-.upload-progress-fill { height: 100%; background: var(--accent-lime); box-shadow: 0 0 12px var(--accent-lime); transition: width 0.2s ease; }
-.upload-progress-label { margin-top: 6px; color: var(--text-sub); font-family: monospace; font-size: 0.8rem; }
-.upload-controls { display: flex; gap: 10px; margin-top: 16px; }
-.upload-controls button { border: 1px solid var(--accent-lime); background: transparent; color: var(--accent-lime); padding: 8px 16px; border-radius: 4px; cursor: pointer; }
-.upload-controls button:hover { background: var(--accent-lime); color: var(--text-inverse); }
-.upload-controls button.danger { border-color: #ff4757; color: #ff4757; }
-.upload-controls button.danger:hover { background: #ff4757; color: #fff; }
+.busy-file { max-width: 80%; margin-top: 8px; color: var(--text-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-progress { width: min(320px, 72%); height: 4px; margin-top: 20px; background: var(--border-tech); overflow: hidden; }
+.upload-progress span { display: block; height: 100%; background: var(--accent-lime); transition: width 0.25s ease; }
+.busy-stat { max-width: 82%; margin-top: 10px; color: var(--text-sub); font-family: monospace; font-size: 0.78rem; text-align: center; }
+.busy-warning { max-width: 82%; margin-top: 8px; color: #ff9aa4; font-family: monospace; font-size: 0.78rem; text-align: center; }
+.busy-actions { margin-top: 16px; }
+.busy-actions button { border: 1px solid var(--border-tech); border-radius: 4px; background: transparent; color: var(--text-sub); padding: 7px 14px; font-size: 0.8rem; cursor: pointer; transition: all 0.3s; }
+.busy-actions button:hover { border-color: #ff4757; color: #ff7c88; }
 /* === [END] 重构结束 === */
 
+.upload-resume {
+  margin-top: 16px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px;
+  padding: 12px 16px; background: var(--bg-card); border: 1px solid var(--border-tech);
+  border-left: 2px solid var(--accent-lime); color: var(--text-sub); font-size: 0.85rem; text-align: left;
+}
+.upload-resume button { border: 1px solid var(--border-tech); border-radius: 4px; background: transparent; color: var(--accent-lime); padding: 6px 12px; cursor: pointer; }
+.upload-resume button:hover { border-color: var(--accent-lime); background: rgba(197, 249, 70, 0.08); }
+
 .notification-bar { margin-top: 2rem; display: inline-block; background: var(--accent-lime); color: var(--text-inverse); padding: 10px 24px; font-weight: 700; border-radius: 4px; clip-path: polygon(5% 0%, 100% 0%, 95% 100%, 0% 100%); }
-.notification-bar.error { background: #ff4757; color: #fff; }
+.notification-bar.error { background: #ff4757; color: #fff; cursor: pointer; }
 
 .quantum-loader { width: 50px; height: 50px; border: 4px solid var(--border-tech); border-top-color: var(--accent-lime); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 1rem; box-shadow: 0 0 10px var(--accent-lime); }
 .quantum-loader.small { width: 30px; height: 30px; margin: 0 auto; }
 
 /* Workspace */
 .workspace-section { opacity: 0; animation: slideUpFade 0.8s 0.4s forwards; }
-.section-header { display: flex; align-items: center; gap: 12px; margin-bottom: 2rem; border-bottom: 2px solid var(--border-tech); padding-bottom: 10px; }
+.section-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 2rem; border-bottom: 2px solid var(--border-tech); padding-bottom: 12px; }
+.library-title { display: flex; align-items: center; gap: 12px; }
 .section-header h3 { font-size: 1.5rem; font-weight: 700; }
 .count-chip { background: var(--border-tech); padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-family: monospace; }
+.library-search { width: min(320px, 42vw); display: flex; align-items: center; gap: 9px; padding: 8px 11px; border: 1px solid var(--border-tech); background: #090a0d; color: var(--text-sub); }
+.library-search:focus-within { border-color: var(--accent-lime); color: var(--accent-lime); }
+.library-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text-main); font: inherit; }
+.library-empty { padding: 52px 20px; text-align: center; color: var(--text-sub); border: 1px dashed var(--border-tech); }
+.library-empty button { margin-top: 12px; border: 0; background: transparent; color: var(--accent-lime); cursor: pointer; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
 .project-card { background: var(--bg-card); border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); border: 1px solid var(--border-tech); overflow: hidden; transition: transform 0.2s; position: relative; }
 .project-card:hover { transform: translateY(-2px); border-color: var(--accent-lime); }
@@ -1101,8 +1571,10 @@ html, body, #app {
 .status-indicator { font-weight: 600; padding: 2px 8px; border-radius: 4px; }
 .status-indicator.completed { color: var(--accent-lime); border: 1px solid var(--accent-lime); background: rgba(197, 249, 70, 0.1); }
 .status-indicator.processing { color: var(--accent-purple); border: 1px solid var(--accent-purple); animation: blink 1s infinite; }
+.status-indicator.failed { color: #ff7c88; border: 1px solid #ff4757; background: rgba(255, 71, 87, 0.08); }
+.status-indicator.unknown { color: var(--text-sub); border: 1px solid var(--border-tech); }
 
-.action-dock { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 12px; background: rgba(5, 8, 5, 0.5); }
+.action-dock { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 12px; padding: 12px; background: rgba(5, 8, 5, 0.5); }
 .dock-item { position: relative; border: 1px solid var(--border-tech); background: var(--bg-card); border-radius: 8px; padding: 16px; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; transition: all 0.3s; color: var(--text-sub); font-family: monospace; overflow: hidden; }
 .dock-item:hover:not(:disabled) { color: var(--accent-lime); border-color: var(--accent-lime); background: rgba(197, 249, 70, 0.05); }
 .dock-item:disabled { opacity: 0.3; cursor: not-allowed; }
@@ -1114,43 +1586,116 @@ html, body, #app {
 
 /* Sidebar */
 .sidebar-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 998; }
-.sidebar-panel { position: fixed; top: 0; right: -600px; width: 550px; max-width: 90vw; height: 100%; background: var(--bg-card); border-left: 2px solid var(--accent-lime); z-index: 999; transition: right 0.4s cubic-bezier(0.19, 1, 0.22, 1); display: flex; flex-direction: column; box-shadow: -10px 0 40px rgba(0,0,0,0.8); }
+.sidebar-panel { position: fixed; top: 0; right: -920px; width: 880px; max-width: calc(100vw - 24px); height: 100%; background: var(--bg-card); border-left: 2px solid var(--accent-lime); z-index: 999; transition: right 0.4s cubic-bezier(0.19, 1, 0.22, 1); display: flex; flex-direction: column; box-shadow: -10px 0 40px rgba(0,0,0,0.8); }
 .sidebar-panel.is-open { right: 0; }
 .sidebar-header { padding: 20px 30px; border-bottom: 1px solid var(--border-tech); display: flex; justify-content: space-between; align-items: center; background: rgba(11, 12, 16, 0.9); }
 .sidebar-title { font-size: 1.4rem; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 10px; }
 .icon { color: var(--accent-lime); display: flex; align-items: center; }
-.close-btn { background: none; border: none; color: var(--text-sub); padding: 5px; cursor: pointer; transition: color 0.3s; }
+.close-btn { width: 40px; height: 40px; background: none; border: none; color: var(--text-sub); cursor: pointer; transition: color 0.3s; font-size: 1.35rem; }
 .close-btn:hover { color: var(--accent-lime); }
 .sidebar-body { flex: 1; overflow-y: auto; padding: 30px; }
-.analysis-config { display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border-tech); }
-.analysis-config p { color: var(--text-sub); font-size: 0.85rem; }
-.analysis-config label { color: var(--accent-lime); }
-.analysis-config textarea { min-height: 90px; resize: vertical; padding: 12px; background: #000; border: 1px solid var(--border-tech); color: var(--text-main); font: inherit; }
-.analysis-config textarea:focus { outline: none; border-color: var(--accent-lime); }
-.analysis-config button { align-self: flex-start; padding: 10px 20px; border: 1px solid var(--accent-lime); background: transparent; color: var(--accent-lime); cursor: pointer; }
-.analysis-config button:disabled { opacity: 0.4; cursor: not-allowed; }
 .loading-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-sub); gap: 20px; }
 .markdown-content, .text-content { line-height: 1.8; color: var(--text-main); font-size: 0.95rem; }
 .text-content pre { white-space: pre-wrap; font-family: monospace; background: #000; padding: 15px; border-radius: 8px; border: 1px solid var(--border-tech); color: #ccc; }
+.text-meta { margin-bottom: 10px; color: var(--text-sub); font-family: monospace; font-size: 0.8rem; }
 .markdown-content h1, .markdown-content h2, .markdown-content h3 { color: var(--accent-lime); margin-top: 1.5em; margin-bottom: 0.5em; font-family: 'Space Grotesk', sans-serif; }
 .markdown-content h1 { border-bottom: 1px solid var(--border-tech); padding-bottom: 10px; }
 .markdown-content ul { padding-left: 20px; }
 .markdown-content li { margin-bottom: 8px; color: #d4d4d8; }
 .markdown-content strong { color: var(--accent-lime); font-weight: 700; }
 .markdown-content p { margin-bottom: 1em; }
-.qa-panel { display: flex; flex-direction: column; height: 100%; gap: 16px; }
-.qa-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
-.qa-message { border: 1px solid var(--border-tech); border-radius: 8px; padding: 12px; background: rgba(0,0,0,0.25); }
-.qa-message.user { border-color: var(--accent-purple); }
-.qa-role { color: var(--accent-lime); font-weight: 700; margin-bottom: 6px; }
-.qa-content { white-space: pre-wrap; line-height: 1.7; }
-.qa-citations { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; color: var(--text-sub); font-size: 0.82rem; }
-.qa-citation { border-left: 2px solid var(--accent-lime); padding-left: 8px; }
-.qa-input { display: flex; gap: 10px; border-top: 1px solid var(--border-tech); padding-top: 12px; }
-.qa-input input { flex: 1; background: #000; border: 1px solid var(--border-tech); color: var(--text-main); padding: 10px; outline: none; }
-.qa-input input:focus { border-color: var(--accent-lime); }
-.qa-input button { border: 1px solid var(--accent-lime); background: transparent; color: var(--accent-lime); padding: 0 16px; cursor: pointer; }
-.qa-input button:disabled { opacity: 0.4; cursor: not-allowed; }
+.markdown-content a[href^="#video-t="] { display: inline-block; padding: 1px 6px; border: 1px solid rgba(197, 249, 70, 0.45); color: var(--accent-lime); text-decoration: none; font-family: monospace; }
+.markdown-content a[href^="#video-t="]:hover { background: var(--accent-lime); color: var(--text-inverse); }
+.result-actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 18px; }
+.result-actions button { border: 1px solid var(--border-tech); background: transparent; color: var(--text-sub); padding: 8px 10px; cursor: pointer; }
+.result-actions button:hover:not(:disabled) { border-color: var(--accent-lime); color: var(--accent-lime); }
+.result-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Agent workspace */
+.video-evidence { margin: -30px -30px 28px; background: #050607; border-bottom: 1px solid var(--border-tech); }
+.video-evidence video { display: block; width: 100%; max-height: 420px; aspect-ratio: 16 / 9; background: #000; object-fit: contain; }
+.video-evidence p, .video-evidence-loading { padding: 10px 30px; color: var(--text-sub); font-size: 0.8rem; }
+.video-evidence-loading { min-height: 110px; display: grid; place-items: center; }
+.video-evidence-error { min-height: 110px; padding: 18px 30px; display: flex; align-items: center; justify-content: center; gap: 12px; color: #ff9aa4; }
+.video-evidence-error button { border: 1px solid #ff4757; background: transparent; color: #ff9aa4; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+.agent-composer { display: flex; flex-direction: column; gap: 18px; }
+.agent-caption { color: var(--text-sub); line-height: 1.7; }
+.inline-error { padding: 11px 12px; border-left: 2px solid #ff4757; background: rgba(255, 71, 87, 0.08); color: #ff9aa4; line-height: 1.5; }
+.agent-composer textarea, .follow-up-box textarea {
+  width: 100%; min-height: 130px; resize: vertical; background: #090a0d; color: var(--text-main);
+  border: 1px solid var(--border-tech); border-radius: 6px; padding: 14px; line-height: 1.6; outline: none;
+}
+.agent-composer textarea:focus, .follow-up-box textarea:focus { border-color: var(--accent-lime); }
+.field-counter { color: var(--text-sub); font-family: monospace; font-size: 0.76rem; text-align: right; }
+.goal-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.goal-presets button, .feedback-row button {
+  border: 1px solid var(--border-tech); border-radius: 4px; background: transparent; color: var(--text-sub);
+  padding: 7px 10px; cursor: pointer;
+}
+.goal-presets button { min-height: 82px; padding: 12px; text-align: left; }
+.goal-presets strong, .goal-presets span { display: block; }
+.goal-presets strong { margin-bottom: 6px; color: var(--text-main); }
+.goal-presets span { font-size: 0.76rem; line-height: 1.45; }
+.goal-presets button:hover, .goal-presets button.active, .feedback-row button:hover, .feedback-row button.active {
+  color: var(--accent-lime); border-color: var(--accent-lime); background: rgba(197, 249, 70, 0.08);
+}
+.goal-presets button:hover strong, .goal-presets button.active strong { color: var(--accent-lime); }
+.agent-run-btn {
+  border: 0; border-radius: 4px; padding: 13px 18px; background: var(--accent-lime); color: var(--text-inverse);
+  font-weight: 700; cursor: pointer;
+}
+.agent-run-btn:disabled, .follow-up-box button:disabled { opacity: 0.4; cursor: not-allowed; }
+.evidence-search { margin: 18px 0 24px; }
+.evidence-search-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.evidence-search-form input {
+  min-width: 0; border: 1px solid var(--border-tech); border-radius: 4px; background: #090a0d;
+  color: var(--text-main); padding: 10px 12px; outline: none;
+}
+.evidence-search-form input:focus { border-color: var(--accent-lime); }
+.evidence-search-form button, .evidence-search-results button {
+  border: 1px solid var(--border-tech); border-radius: 4px; background: transparent;
+  color: var(--text-sub); padding: 9px 11px; cursor: pointer;
+}
+.evidence-search-form button:hover, .evidence-search-results button:hover { border-color: var(--accent-lime); color: var(--accent-lime); }
+.evidence-search-form button:disabled { opacity: 0.4; cursor: not-allowed; }
+.evidence-search-error { margin-top: 8px; color: #ff9aa4; font-size: 0.82rem; }
+.evidence-search-results { display: grid; gap: 6px; margin-top: 8px; }
+.evidence-search-results button { display: grid; grid-template-columns: 58px 70px minmax(0, 1fr); gap: 10px; text-align: left; }
+.evidence-search-results strong { color: var(--accent-lime); }
+.evidence-search-results small { color: var(--accent-purple); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evidence-search-results span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-running { display: flex; flex-direction: column; gap: 20px; }
+.agent-running .loading-state { min-height: 210px; height: auto; }
+.loading-state p { max-width: 34rem; text-align: center; }
+.stream-offline { color: #ff9aa4; font-family: monospace; font-size: 0.82rem; }
+.loading-hint { color: var(--text-sub); font-size: 0.8rem; opacity: 0.85; }
+.agent-inspector { margin-top: 28px; border-top: 1px solid var(--border-tech); padding-top: 16px; }
+.agent-inspector summary { color: var(--text-sub); cursor: pointer; font-weight: 600; padding: 8px 0; }
+.agent-inspector summary:hover { color: var(--accent-lime); }
+.agent-inspector-content { padding-top: 14px; }
+.agent-meta-block { margin-bottom: 18px; padding: 14px; background: #0c0e12; border-left: 2px solid var(--accent-lime); }
+.meta-label { display: block; color: var(--accent-lime); font-size: 0.78rem; font-weight: 700; margin-bottom: 10px; }
+.agent-meta-block ol { padding-left: 20px; color: #c9cbd0; }
+.agent-meta-block li { margin: 7px 0; }
+.plan-editor { display: grid; gap: 8px; margin-top: 12px; }
+.plan-editor-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 8px; }
+.plan-editor input { min-width: 0; border: 1px solid var(--border-tech); background: #090b0e; color: var(--text-main); padding: 9px 10px; }
+.plan-editor button, .plan-edit-trigger { border: 1px solid var(--border-tech); background: transparent; color: var(--text-sub); padding: 7px 10px; cursor: pointer; }
+.plan-editor button:hover, .plan-edit-trigger:hover { color: var(--accent-lime); border-color: var(--accent-lime); }
+.plan-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.plan-edit-trigger { margin-top: 8px; }
+.stage-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.stage-list span, .quality-row span {
+  border: 1px solid var(--border-tech); border-radius: 4px; padding: 6px 8px; color: var(--text-sub); font-size: 0.78rem;
+}
+.quality-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.follow-up-box { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 24px; }
+.follow-up-box textarea { min-height: 76px; }
+.follow-up-box button {
+  align-self: stretch; min-width: 76px; border: 1px solid var(--accent-lime); border-radius: 4px;
+  background: rgba(197, 249, 70, 0.08); color: var(--accent-lime); cursor: pointer;
+}
+.feedback-row { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: var(--text-sub); font-size: 0.85rem; }
 
 /* 登录框 */
 .auth-backdrop { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); z-index: 2000; display: flex; justify-content: center; align-items: center; }
@@ -1174,10 +1719,64 @@ html, body, #app {
 /* 删除按钮 */
 .delete-btn {
   position: absolute; top: 10px; right: 10px; background: transparent; border: none;
-  color: #71757a; cursor: pointer; opacity: 0; transition: all 0.3s ease; z-index: 10; padding: 5px;
+  width: 36px; height: 36px; color: #71757a; cursor: pointer; opacity: 0; transition: color 0.2s ease, opacity 0.2s ease; z-index: 10;
 }
-.project-card:hover .delete-btn { opacity: 1; }
-.delete-btn:hover { color: #ff4757; transform: scale(1.2) rotate(90deg); }
+.project-card:hover .delete-btn, .delete-btn:focus-visible { opacity: 1; }
+.delete-btn:hover:not(:disabled) { color: #ff4757; }
+.delete-btn:disabled { cursor: progress; opacity: 0.5; }
+.url-input-box input:disabled, .url-go-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@media (max-width: 720px) {
+  .navbar { padding: 0.8rem 0; }
+  .nav-content { padding: 0 1rem; }
+  .brand-video, .brand-flow { font-size: 1.25rem; }
+  .status-pill { display: none; }
+  .auth-btn { padding: 6px 10px; }
+  .main-container { padding: 2.5rem 1rem; }
+  .hero-section { margin-bottom: 3rem; }
+  .slogan-main { font-size: 2rem; }
+  .slogan-sub { margin-bottom: 2rem; }
+  .upload-magnet { height: auto; min-height: 420px; border-radius: 8px; }
+  .split-container { flex-direction: column; }
+  .skew-pane, .pane-local, .pane-url { min-height: 210px; margin: 0; padding: 0; transform: none; }
+  .pane-local { border-right: 0; border-bottom: 1px solid var(--accent-lime); }
+  .pane-content, .skew-pane:hover .pane-content { transform: none; }
+  .split-gap { display: none; }
+  .card-grid { grid-template-columns: 1fr; }
+  .section-header { align-items: stretch; flex-direction: column; }
+  .library-search { width: 100%; }
+  .action-dock { grid-template-columns: 1fr; }
+  .filename-mask { max-width: 55vw; }
+  .sidebar-panel { width: 100%; max-width: 100vw; right: -100vw; }
+  .sidebar-header { padding: 16px 18px; }
+  .sidebar-title { font-size: 1rem; max-width: calc(100vw - 70px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidebar-body { padding: 20px 16px; }
+  .video-evidence { margin: -20px -16px 22px; }
+  .video-evidence p, .video-evidence-loading { padding-left: 16px; padding-right: 16px; }
+  .goal-presets { grid-template-columns: 1fr; }
+  .goal-presets button { min-height: 68px; }
+  .result-actions { justify-content: stretch; }
+  .result-actions button { flex: 1; padding: 9px 4px; font-size: 0.76rem; }
+  .evidence-search-form { grid-template-columns: 1fr; }
+  .evidence-search-results button { grid-template-columns: 56px minmax(0, 1fr); }
+  .evidence-search-results small { display: none; }
+  .follow-up-box { grid-template-columns: 1fr; }
+  .follow-up-box button { min-height: 44px; }
+  .delete-btn { opacity: 1; }
+  .upload-resume { flex-direction: column; align-items: stretch; text-align: center; }
+  .upload-resume button { min-height: 40px; }
+  .busy-stat, .busy-warning { max-width: 92%; }
+  /*
+    移动端侧栏铺满整屏，背景还能滚动会非常割裂，这里锁住。
+    只在窄屏生效：移动端滚动条是浮层式的，隐藏溢出不会让内容横向跳动；
+    桌面端滚动条占布局宽度，锁滚动会带来 15px 左右的位移，所以不动。
+  */
+  body.overlay-open { overflow: hidden; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes slideUpFade { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }

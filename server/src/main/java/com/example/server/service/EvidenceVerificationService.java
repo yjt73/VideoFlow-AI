@@ -4,73 +4,60 @@ import com.example.server.dto.AnalysisResult;
 import com.example.server.dto.VideoContext;
 import org.springframework.stereotype.Service;
 
-import java.util.Arrays;
 import java.util.Locale;
-import java.util.Set;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 @Service
 public class EvidenceVerificationService {
 
     public boolean timestampCovered(VideoContext context, AnalysisResult.Evidence evidence) {
-        if (context == null || evidence == null) return false;
-        return context.segments().stream()
-                .anyMatch(segment -> evidence.timestampMs() >= segment.startMs()
-                        && evidence.timestampMs() < segment.endMs());
+        return context != null && evidence != null && context.segments().stream()
+                .anyMatch(segment -> containsTimestamp(segment, evidence.timestampMs()));
     }
 
     public boolean supported(VideoContext context, AnalysisResult.Evidence evidence) {
         if (context == null || evidence == null || evidence.content().isBlank()) return false;
         String source = evidence.source().toUpperCase(Locale.ROOT);
-        if (!source.equals("ASR") && !source.equals("OCR")) return false;
+        // Enforce the model-output contract, not a substring of an invented source.
+        if (!source.equals("ASR") && !source.equals("OCR") && !source.equals("ASR+OCR")) return false;
 
         return context.segments().stream()
-                .filter(segment -> evidence.timestampMs() >= segment.startMs()
-                        && evidence.timestampMs() < segment.endMs())
-                .anyMatch(segment -> {
-                    String searchable = source.equals("OCR")
-                            ? String.join(" ", segment.ocrTexts())
-                            : segment.transcript();
-                    return containsNormalized(searchable, evidence.content());
-                });
+                .filter(segment -> containsTimestamp(segment, evidence.timestampMs()))
+                .map(segment -> sourceText(segment, source))
+                .anyMatch(candidate -> textMatches(evidence.content(), candidate));
     }
 
     public boolean supportsClaim(VideoContext context,
-                                 String conclusion,
+                                 String claim,
                                  AnalysisResult.Evidence evidence) {
-        if (conclusion == null || conclusion.isBlank() || !supported(context, evidence)) {
-            return false;
-        }
-        Set<String> evidenceTerms = terms(evidence.content() + " " + evidence.claim());
-        Set<String> claimTerms = terms(conclusion);
-        long matched = claimTerms.stream().filter(evidenceTerms::contains).count();
-        boolean chineseMatch = claimTerms.stream()
-                .filter(evidenceTerms::contains)
-                .anyMatch(term -> term.codePoints()
-                        .anyMatch(cp -> cp >= 0x4e00 && cp <= 0x9fff));
-        return matched >= 2 || chineseMatch;
+        return evidence != null
+                && !normalize(claim).isEmpty()
+                && normalize(claim).equals(normalize(evidence.claim()))
+                && supported(context, evidence);
     }
 
-    private boolean containsNormalized(String source, String expected) {
-        return compact(source).contains(compact(expected));
+    private boolean containsTimestamp(VideoContext.VideoSegment segment, long timestampMs) {
+        return timestampMs >= segment.startMs() && timestampMs < segment.endMs();
+    }
+
+    private String sourceText(VideoContext.VideoSegment segment, String source) {
+        if (source.equals("ASR+OCR")) {
+            return segment.transcript() + " " + String.join(" ", segment.ocrTexts());
+        }
+        if (source.equals("ASR")) return segment.transcript();
+        return String.join(" ", segment.ocrTexts());
+    }
+
+    private boolean textMatches(String evidence, String candidate) {
+        String normalizedEvidence = normalize(evidence);
+        String normalizedCandidate = normalize(candidate);
+        return !normalizedEvidence.isEmpty()
+                && !normalizedCandidate.isEmpty()
+                && normalizedCandidate.contains(normalizedEvidence);
     }
 
     private String normalize(String value) {
         return value == null
                 ? ""
-                : value.toLowerCase(Locale.ROOT).trim().replaceAll("\\s+", " ");
-    }
-
-    private String compact(String value) {
-        return normalize(value).replace(" ", "");
-    }
-
-    private Set<String> terms(String value) {
-        return Arrays.stream(normalize(value).split("[^\\p{L}\\p{N}\\p{IsHan}]+"))
-                .filter(Predicate.not(String::isBlank))
-                .filter(term -> term.length() > 1 || term.codePoints()
-                        .anyMatch(cp -> cp >= 0x4e00 && cp <= 0x9fff))
-                .collect(Collectors.toSet());
+                : value.toLowerCase(Locale.ROOT).replaceAll("[\\p{P}\\p{S}\\s]+", "");
     }
 }

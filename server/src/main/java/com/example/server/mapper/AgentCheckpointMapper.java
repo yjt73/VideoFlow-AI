@@ -10,10 +10,12 @@ import org.apache.ibatis.annotations.Select;
 public interface AgentCheckpointMapper {
 
     @Select("SELECT payload FROM agent_checkpoints WHERE media_id = #{mediaId} AND checkpoint_key = #{checkpointKey}")
-    String findPayload(@Param("mediaId") Long mediaId, @Param("checkpointKey") String checkpointKey);
+    String findPayload(@Param("mediaId") Long mediaId,
+                       @Param("checkpointKey") String checkpointKey);
 
     @Select("SELECT stage FROM agent_checkpoints WHERE media_id = #{mediaId} AND checkpoint_key = #{checkpointKey}")
-    String findStage(@Param("mediaId") Long mediaId, @Param("checkpointKey") String checkpointKey);
+    String findStage(@Param("mediaId") Long mediaId,
+                     @Param("checkpointKey") String checkpointKey);
 
     @Insert("""
             INSERT INTO agent_checkpoints(media_id, checkpoint_key, stage, payload)
@@ -25,12 +27,12 @@ public interface AgentCheckpointMapper {
                 @Param("stage") String stage,
                 @Param("payload") String payload);
 
-    @Delete("DELETE FROM agent_checkpoints WHERE media_id = #{mediaId}")
-    void deleteByMediaId(@Param("mediaId") Long mediaId);
-
     @Delete("DELETE FROM agent_checkpoints WHERE media_id = #{mediaId} AND checkpoint_key LIKE CONCAT(#{prefix}, '%')")
     void deleteByPrefix(@Param("mediaId") Long mediaId, @Param("prefix") String prefix);
 
     @Delete("DELETE FROM agent_checkpoints WHERE media_id = #{mediaId} AND checkpoint_key = #{checkpointKey}")
     void delete(@Param("mediaId") Long mediaId, @Param("checkpointKey") String checkpointKey);
+
+    @Delete("DELETE FROM agent_checkpoints WHERE media_id = #{mediaId}")
+    void deleteByMediaId(@Param("mediaId") Long mediaId);
 }

@@ -23,7 +23,6 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.HexFormat;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -82,23 +81,6 @@ public class ChunkUploadService {
         return result;
     }
 
-    public void cancel(String uploadId, Long userId) {
-        validateUploadId(uploadId);
-        RLock mergeLock = redissonClient.getLock("lock:upload:merge:" + uploadId);
-        if (!mergeLock.tryLock()) {
-            throw new BusinessException(ErrorCode.CONFLICT, "该上传任务正在合并中，请稍后重试");
-        }
-        try {
-            requireUpload(uploadId, userId);
-            for (int chunkIndex : uploadedChunks(uploadId, userId)) {
-                minioUtils.removeObject(chunkObjectName(uploadId, chunkIndex));
-            }
-            redisTemplate.delete(List.of(uploadKey(uploadId), partsKey(uploadId)));
-        } finally {
-            if (mergeLock.isHeldByCurrentThread()) mergeLock.unlock();
-        }
-    }
-
     public void uploadChunk(String uploadId,
                             int chunkIndex,
                             int totalChunks,
@@ -114,6 +96,9 @@ public class ChunkUploadService {
         if (totalChunks != expectedChunks || chunkIndex < 0 || chunkIndex >= expectedChunks) {
             throw new IllegalArgumentException("invalid chunk index or totalChunks");
         }
+        // A response can be lost after merging. Late chunk retries must not recreate
+        // temporary objects for an upload that already has its final media record.
+        if (completedUpload(uploadId, userId) != null) return;
 
         try (InputStream inputStream = chunk.getInputStream()) {
             minioUtils.uploadObject(
@@ -164,8 +149,12 @@ public class ChunkUploadService {
                 MediaFile mediaFile = mediaService.saveUploadedMedia(
                         filename, fileUrl, userId, HexFormat.of().formatHex(digest.digest()));
                 // 先记成功再清现场。清理失败或客户端重试，都不会再插一条媒体记录。
+                // The receipt must outlive the resumable metadata, including the
+                // small time gap between these Redis calls near expiry.
                 redisTemplate.opsForValue().set(
-                        completedKey(uploadId), String.valueOf(mediaFile.getId()), 1, TimeUnit.DAYS);
+                        completedKey(uploadId), String.valueOf(mediaFile.getId()), 25, TimeUnit.HOURS);
+                redisTemplate.expire(uploadKey(uploadId), 1, TimeUnit.DAYS);
+                redisTemplate.expire(partsKey(uploadId), 1, TimeUnit.DAYS);
                 cleanup(uploadId, totalChunks, mediaFile.getId());
                 return mediaFile;
             } finally {
@@ -176,6 +165,7 @@ public class ChunkUploadService {
         }
     }
 
+    //校验是否合并成功并保存了回执，但是客户端没有接收到
     private MediaFile completedUpload(String uploadId, Long userId) {
         String mediaId = redisTemplate.opsForValue().get(completedKey(uploadId));
         if (mediaId == null) return null;
@@ -186,7 +176,7 @@ public class ChunkUploadService {
             return null;
         }
     }
-
+    //检验任务是否合法并返回元数据
     private Map<Object, Object> requireUpload(String uploadId, Long userId) {
         validateUploadId(uploadId);
         Map<Object, Object> metadata = redisTemplate.opsForHash().entries(uploadKey(uploadId));
@@ -216,11 +206,9 @@ public class ChunkUploadService {
                         uploadId, i, mediaId, e);
             }
         }
-        try {
-            redisTemplate.delete(List.of(uploadKey(uploadId), partsKey(uploadId)));
-        } catch (RuntimeException e) {
-            log.warn("chunk_upload_metadata_cleanup_failed uploadId={} mediaId={}", uploadId, mediaId, e);
-        }
+        // Keep the small ownership metadata and part indexes until their TTL expires.
+        // A client that missed the successful response checks /upload-status first;
+        // deleting them would make it start over and insert a duplicate media record.
     }
 
     private MessageDigest md5Digest() {

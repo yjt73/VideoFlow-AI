@@ -1,0 +1,5 @@
+{
+  "name": "videoflow-extension",
+  "private": true,
+  "type": "module"
+}

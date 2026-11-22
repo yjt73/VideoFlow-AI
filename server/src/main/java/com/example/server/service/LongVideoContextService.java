@@ -45,19 +45,7 @@ public class LongVideoContextService {
 
         List<VideoChunk> chunks = resolveChunks(mediaId, context.segments());
         List<VideoContext.VideoSegment> selectedSegments =
-                retrievalService.retrieve(mediaId, context.userGoal(), chunks).stream()
-                        .flatMap(hit -> chunks.stream()
-                                .filter(chunk -> chunk.startTime() == hit.startMs()
-                                        && chunk.endTime() == hit.endMs())
-                                .flatMap(chunk -> chunk.rawSegments().stream()))
-                        .distinct()
-                        .sorted(Comparator.comparingLong(VideoContext.VideoSegment::startMs))
-                        .toList();
-        if (selectedSegments.isEmpty()) {
-            selectedSegments = chunks.stream()
-                    .flatMap(chunk -> chunk.rawSegments().stream())
-                    .toList();
-        }
+                retrievalService.retrieve(mediaId, context.userGoal(), chunks);
         return withinBudget(context, selectedSegments);
     }
 
@@ -90,9 +78,9 @@ public class LongVideoContextService {
         if (critique == null) return goal;
         return String.join("\n",
                 goal,
-                String.join(" ", critique.feedback()),
-                String.join(" ", critique.missingRequirements()),
-                String.join(" ", critique.unsupportedClaims()));
+                String.join(" ", critique.feedback() == null ? List.of() : critique.feedback()),
+                String.join(" ", critique.missingRequirements() == null ? List.of() : critique.missingRequirements()),
+                String.join(" ", critique.unsupportedClaims() == null ? List.of() : critique.unsupportedClaims()));
     }
 
     private String segmentKey(VideoContext.VideoSegment segment) {
@@ -137,4 +125,5 @@ public class LongVideoContextService {
         }
         return chunks;
     }
+
 }

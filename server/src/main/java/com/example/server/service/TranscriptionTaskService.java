@@ -3,7 +3,6 @@ package com.example.server.service;
 import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.entity.MediaFile;
-import com.example.server.dto.VideoContext;
 import com.example.server.mapper.MediaFileMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,20 +20,17 @@ public class TranscriptionTaskService {
 
     private final MediaFileMapper mediaFileMapper;
     private final VideoTranscriptionService videoTranscriptionService;
-    private final AgentCheckpointService checkpointService;
     private final MediaService mediaService;
     private final StringRedisTemplate redisTemplate;
     private final TaskEventService taskEventService;
 
     public TranscriptionTaskService(MediaFileMapper mediaFileMapper,
                                     VideoTranscriptionService videoTranscriptionService,
-                                    AgentCheckpointService checkpointService,
                                     MediaService mediaService,
                                     StringRedisTemplate redisTemplate,
                                     TaskEventService taskEventService) {
         this.mediaFileMapper = mediaFileMapper;
         this.videoTranscriptionService = videoTranscriptionService;
-        this.checkpointService = checkpointService;
         this.mediaService = mediaService;
         this.redisTemplate = redisTemplate;
         this.taskEventService = taskEventService;
@@ -51,31 +47,25 @@ public class TranscriptionTaskService {
 
     @Async("aiTaskExecutor")
     public void transcribe(Long mediaId) {
-        MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null) {
-            clearActive(mediaId);
-            return;
-        }
-
         try {
+            MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
+            if (mediaFile == null) return;
             setState(mediaId, TaskStatus.State.PROCESSING, ACTIVE_TTL);
             taskEventService.publishTranscription(mediaId,
                     TaskStatus.of(TaskStatus.State.PROCESSING, "正在识别视频语音"), TaskStage.ASR);
-            String transcript = mediaFile.getTranscriptText();
-            if (transcript == null || transcript.isBlank()) {
-                VideoContext context = checkpointService.loadContext(mediaId);
-                transcript = context == null ? null : context.transcriptText();
-            }
-            if (transcript == null || transcript.isBlank()) {
-                transcript = videoTranscriptionService.transcribe(
-                        mediaService.readableSource(mediaFile.getFilePath()));
-            }
-            mediaFile.setTranscriptText(transcript);
-            mediaFileMapper.updateById(mediaFile);
+            //真正触发语音识别的地方
+            String transcript = videoTranscriptionService.transcribe(
+                    mediaService.readableSource(mediaFile.getFilePath()));
+            MediaFile update = new MediaFile();
+            update.setId(mediaId);
+            update.setTranscriptText(transcript);
+            // Analysis can finish while ASR is running. Update only the transcript so an older
+            // MediaFile snapshot cannot overwrite the newly saved AI result or other fields.
+            if (mediaFileMapper.updateById(update) == 0) return;
             mediaService.invalidateUserList(mediaFile.getUserId());
             setState(mediaId, TaskStatus.State.COMPLETED, Duration.ofDays(7));
             taskEventService.publishTranscription(mediaId,
-                    TaskStatus.completed(mediaFile.getTranscriptText()), TaskStage.COMPLETED);
+                    TaskStatus.completed(transcript), TaskStage.COMPLETED);
             log.info("transcription_completed mediaId={}", mediaId);
         } catch (Exception e) {
             setState(mediaId, TaskStatus.State.FAILED, Duration.ofHours(1));
@@ -95,10 +85,25 @@ public class TranscriptionTaskService {
     }
 
     public TaskStatus status(MediaFile mediaFile) {
-        if (mediaFile.getTranscriptText() != null && !mediaFile.getTranscriptText().isBlank()) {
+        boolean hasTranscript = mediaFile.getTranscriptText() != null && !mediaFile.getTranscriptText().isBlank();
+        String stateValue;
+        try {
+            stateValue = redisTemplate.opsForValue().get(stateKey(mediaFile.getId()));
+            if ((TaskStatus.State.QUEUED.name().equals(stateValue)
+                    || TaskStatus.State.PROCESSING.name().equals(stateValue))
+                    && Boolean.TRUE.equals(redisTemplate.hasKey(activeKey(mediaFile.getId())))) {
+                TaskStatus.State state = TaskStatus.State.valueOf(stateValue);
+                return TaskStatus.of(state, state == TaskStatus.State.QUEUED ? "文字提取任务已排队" : "正在提取文字");
+            }
+        } catch (RuntimeException e) {
+            // Runtime state is advisory when a durable transcript is already available.
+            if (!hasTranscript) throw e;
+            log.warn("transcription_state_read_failed_using_saved_text mediaId={}", mediaFile.getId(), e);
             return TaskStatus.completed(mediaFile.getTranscriptText());
         }
-        String stateValue = redisTemplate.opsForValue().get(stateKey(mediaFile.getId()));
+        if (hasTranscript) {
+            return TaskStatus.completed(mediaFile.getTranscriptText());
+        }
         if (stateValue == null) {
             boolean active = Boolean.TRUE.equals(redisTemplate.hasKey(activeKey(mediaFile.getId())));
             return active
@@ -117,8 +122,7 @@ public class TranscriptionTaskService {
         return switch (state) {
             case COMPLETED -> TaskStatus.completed(mediaFile.getTranscriptText());
             case FAILED -> TaskStatus.of(state, "文字提取失败，请稍后重试");
-            case QUEUED -> TaskStatus.of(state, "文字提取任务已排队");
-            case PROCESSING -> TaskStatus.of(state, "正在提取文字");
+            case QUEUED, PROCESSING -> TaskStatus.of(TaskStatus.State.FAILED, "文字提取任务已中断，请重新提交");
             case NOT_STARTED -> TaskStatus.of(state, "尚未提交文字提取任务");
         };
     }

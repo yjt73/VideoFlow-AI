@@ -1,0 +1,36 @@
+name: videoflow
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    volumes:
+      - './mysql/data:/var/lib/mysql'
+  redis:
+    image: redis:latest
+    restart: unless-stopped
+    volumes:
+      - './redis/data:/data'
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    volumes:
+      - './minio/data:/data'
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    restart: unless-stopped
+    volumes:
+      - './qdrant/data:/qdrant/storage'
+  rmqnamesrv:
+    image: apache/rocketmq:5.3.2
+    restart: unless-stopped
+  rmqbroker:
+    image: apache/rocketmq:5.3.2
+    restart: unless-stopped
+volumes:
+  rocketmq-store:
+    external: true
+    name: dovideo-ai_rocketmq-store
+  rocketmq-logs:
+    external: true
+    name: dovideo-ai_rocketmq-logs
+

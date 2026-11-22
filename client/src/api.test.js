@@ -1,113 +1,55 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { apiFetch, askVideoQuestion } from './api'
+import assert from 'node:assert/strict'
+import test, { beforeEach } from 'node:test'
+import { apiRequest, setAuthToken } from './api.js'
 
-const jsonResponse = (body, status = 200) => ({
-  ok: status >= 200 && status < 300,
-  status,
-  headers: new Headers({ 'content-type': 'application/json' }),
-  json: async () => body
+beforeEach(() => {
+  const storage = new Map()
+  globalThis.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key)
+  }
+  globalThis.window = new EventTarget()
 })
 
-describe('apiFetch 请求控制', () => {
-  beforeEach(() => {
-    vi.stubGlobal('localStorage', {
-      getItem: vi.fn(() => null),
-      setItem: vi.fn(),
-      removeItem: vi.fn()
-    })
-  })
+test('API network failures produce an actionable message', async () => {
+  globalThis.localStorage = { getItem: () => null }
+  globalThis.fetch = async () => {
+    throw new TypeError('fetch failed')
+  }
 
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.useRealTimers()
-  })
+  await assert.rejects(apiRequest('/health'), /请确认后端已启动且地址配置正确/)
+})
 
-  it('外部取消信号会终止 fetch', async () => {
-    vi.stubGlobal('fetch', vi.fn((url, options) => new Promise((resolve, reject) => {
-      options.signal.addEventListener('abort', () => {
-        reject(new DOMException('aborted', 'AbortError'))
-      })
-    })))
-    const controller = new AbortController()
+test('a stale 401 cannot log out a newer login', async () => {
+  setAuthToken('old-token')
+  let respond
+  globalThis.fetch = () => new Promise(resolve => { respond = resolve })
+  let expired = 0
+  window.addEventListener('auth-expired', () => { expired += 1 })
+  const request = apiRequest('/media/list')
+  setAuthToken('new-token')
+  respond(new Response('expired', { status: 401 }))
+  await request
+  assert.equal(localStorage.getItem('authToken'), 'new-token')
+  assert.equal(expired, 0)
+})
 
-    const request = apiFetch('/media/list', { signal: controller.signal })
-    controller.abort()
+test('a current 401 clears login and reports expiry once', async () => {
+  setAuthToken('current-token')
+  globalThis.fetch = async () => new Response('expired', { status: 401 })
+  let expired = 0
+  window.addEventListener('auth-expired', () => { expired += 1 })
+  await apiRequest('/media/list')
+  assert.equal(localStorage.getItem('authToken'), null)
+  assert.equal(expired, 1)
+})
 
-    await expect(request).rejects.toMatchObject({ name: 'AbortError' })
-  })
-
-  it('请求超时后抛出可重试错误', async () => {
-    vi.useFakeTimers()
-    vi.stubGlobal('fetch', vi.fn((url, options) => new Promise((resolve, reject) => {
-      options.signal.addEventListener('abort', () => {
-        reject(new DOMException('aborted', 'AbortError'))
-      })
-    })))
-
-    const request = apiFetch('/media/list', { timeoutMs: 100 })
-    const assertion = expect(request).rejects.toMatchObject({
-      code: 'REQUEST_TIMEOUT',
-      retryable: true
-    })
-    await vi.advanceTimersByTimeAsync(100)
-
-    await assertion
-  })
-
-  it('保留后端状态和统一错误信息', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
-      code: 503,
-      message: 'Redis 暂时不可用',
-      requestId: 'request-1'
-    }, 503)))
-
-    await expect(apiFetch('/media/multipart/check')).rejects.toMatchObject({
-      status: 503,
-      code: 503,
-      message: 'Redis 暂时不可用',
-      requestId: 'request-1'
-    })
-  })
-
-  it('保留稳定业务错误码供上传会话过期判断', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
-      code: 404,
-      errorCode: 'UPLOAD_SESSION_EXPIRED',
-      message: '上传会话已过期'
-    }, 404)))
-
-    await expect(apiFetch('/media/multipart/check')).rejects.toMatchObject({
-      status: 404,
-      errorCode: 'UPLOAD_SESSION_EXPIRED'
-    })
-  })
-
-  it('提交视频问答请求', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({
-      code: 200,
-      data: {
-        conversationId: 'conversation-1',
-        answer: '第三章主要讲评分规则。',
-        citations: [{ timestampMs: 120000, source: 'ASR', content: '评分规则' }]
-      }
-    }))
-    vi.stubGlobal('fetch', fetchMock)
-
-    const result = await askVideoQuestion(9, {
-      conversationId: 'conversation-1',
-      question: '第三章讲了什么？'
-    })
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/media/9/qa',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          conversationId: 'conversation-1',
-          question: '第三章讲了什么？'
-        })
-      })
-    )
-    expect(result.answer).toContain('评分规则')
-  })
+test('SSE and binary responses are never consumed by JSON unwrapping', async () => {
+  for (const contentType of ['text/event-stream', 'audio/mpeg']) {
+    const response = new Response('payload', { headers: { 'Content-Type': contentType } })
+    globalThis.fetch = async () => response
+    assert.equal(await apiRequest('/analysis/events'), response)
+    assert.equal(response.bodyUsed, false)
+  }
 })

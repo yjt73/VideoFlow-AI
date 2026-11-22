@@ -2,7 +2,9 @@ package com.example.server.dto;
 
 import java.util.List;
 
-/** 保存智能体规划、执行和审查阶段的完整状态。 */
+/**
+ * 受控 AgentLoop 的显式状态：目标、计划、当前产物、Critic 反馈和轮次。
+ */
 public record AgentState(
         String goal,
         AgentPlan plan,
@@ -11,12 +13,8 @@ public record AgentState(
         int round
 ) {
     public AgentState {
-        if (goal == null || goal.isBlank()) {
-            throw new IllegalArgumentException("agent goal is required");
-        }
-        if (round < 0) {
-            throw new IllegalArgumentException("agent round cannot be negative");
-        }
+        if (goal == null || goal.isBlank()) throw new IllegalArgumentException("agent goal is required");
+        if (round < 0) throw new IllegalArgumentException("agent round cannot be negative");
         goal = goal.trim();
     }
 

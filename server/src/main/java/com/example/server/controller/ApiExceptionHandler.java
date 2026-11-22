@@ -3,7 +3,6 @@ package com.example.server.controller;
 import com.example.server.common.ErrorCode;
 import com.example.server.common.Result;
 import com.example.server.exception.BusinessException;
-import com.example.server.service.AgentExecutionBudget;
 import com.example.server.service.AgentLoopService;
 import com.example.server.service.VideoContextNotReadyException;
 import jakarta.validation.ConstraintViolationException;
@@ -13,6 +12,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -65,6 +67,7 @@ public class ApiExceptionHandler {
     // ---- 其余客户端错误（缺参/类型不匹配/请求体不可读/非法参数）→ 400 ----
     @ExceptionHandler({
             MissingServletRequestParameterException.class,
+            MissingServletRequestPartException.class,
             MissingRequestHeaderException.class,
             MethodArgumentTypeMismatchException.class,
             HttpMessageNotReadableException.class,
@@ -79,6 +82,18 @@ public class ApiExceptionHandler {
         return build(HttpStatus.METHOD_NOT_ALLOWED, ErrorCode.INVALID_ARGUMENT.code(), "请求方法不被支持");
     }
 
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<Result<Void>> uploadTooLarge(MaxUploadSizeExceededException error) {
+        return build(HttpStatus.PAYLOAD_TOO_LARGE, ErrorCode.PAYLOAD_TOO_LARGE.code(),
+                "上传文件或请求体超过大小限制，请使用分片上传或压缩文件");
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Result<Void>> unsupportedMediaType(HttpMediaTypeNotSupportedException error) {
+        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, ErrorCode.UNSUPPORTED_MEDIA_TYPE.code(),
+                "请求内容类型不受支持");
+    }
+
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<Result<Void>> notFound(NoSuchElementException error) {
         return build(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND.code(), safe(error.getMessage(), "资源不存在"));
@@ -89,8 +104,8 @@ public class ApiExceptionHandler {
         return build(HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN.code(), safe(error.getMessage(), "无访问权限"));
     }
 
-    @ExceptionHandler(AgentExecutionBudget.BudgetExceededException.class)
-    public ResponseEntity<Result<Void>> budgetExceeded(AgentExecutionBudget.BudgetExceededException error) {
+    @ExceptionHandler(AgentLoopService.BudgetExceededException.class)
+    public ResponseEntity<Result<Void>> budgetExceeded(AgentLoopService.BudgetExceededException error) {
         return build(HttpStatus.UNPROCESSABLE_ENTITY, ErrorCode.UNPROCESSABLE.code(),
                 safe(error.getMessage(), "任务已超出预算"));
     }
@@ -112,7 +127,7 @@ public class ApiExceptionHandler {
             cause = nested.getCause();
         }
         if (cause instanceof BusinessException businessException) return business(businessException);
-        if (cause instanceof AgentExecutionBudget.BudgetExceededException budgetException) {
+        if (cause instanceof AgentLoopService.BudgetExceededException budgetException) {
             return budgetExceeded(budgetException);
         }
         if (cause instanceof VideoContextNotReadyException contextException) {

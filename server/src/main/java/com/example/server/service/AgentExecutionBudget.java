@@ -1,97 +1,58 @@
 package com.example.server.service;
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
+import java.util.concurrent.TimeUnit;
 
-@Service
-public class AgentExecutionBudget {
+/**
+ * Carries the current Agent deadline through the synchronous orchestration thread.
+ * Model calls use the remaining time as their own timeout, so a slow provider cannot
+ * silently run past the task budget.
+ */
+public final class AgentExecutionBudget {
 
-    private final long defaultMaxDurationMs;
-    private final long maxEstimatedTokens;
-    private final double maxEstimatedCost;
-    private final ThreadLocal<Scope> currentScope = new ThreadLocal<>();
+    private static final ThreadLocal<Long> DEADLINE_NANOS = new ThreadLocal<>();
 
-    public AgentExecutionBudget(
-            @Value("${agent.budget.max-duration-ms:300000}") long defaultMaxDurationMs,
-            @Value("${agent.budget.max-estimated-tokens:50000}") long maxEstimatedTokens,
-            @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost) {
-        this.defaultMaxDurationMs = defaultMaxDurationMs;
-        this.maxEstimatedTokens = maxEstimatedTokens;
-        this.maxEstimatedCost = maxEstimatedCost;
+    private AgentExecutionBudget() {
     }
 
-    public Scope open() {
-        return open(defaultMaxDurationMs);
-    }
-
-    public Scope open(long maxDurationMs) {
-        long durationMs = Math.max(0L, maxDurationMs);
-        Scope previous = currentScope.get();
-        Scope scope = new Scope(
-                previous,
-                System.nanoTime() + durationMs * 1_000_000L,
-                maxEstimatedTokens,
-                maxEstimatedCost);
-        currentScope.set(scope);
-        return scope;
-    }
-
-    public void addEstimatedTokens(long tokens) {
-        Scope scope = currentScope.get();
-        if (scope != null) scope.estimatedTokens += Math.max(0L, tokens);
-    }
-
-    public void addEstimatedCost(double cost) {
-        Scope scope = currentScope.get();
-        if (scope != null) scope.estimatedCost += Math.max(0.0d, cost);
-    }
-
-    public void check(String stage) {
-        Scope scope = currentScope.get();
-        if (scope == null) return;
-        if (System.nanoTime() >= scope.deadlineNanos) {
-            throw new BudgetExceededException(stage, "deadline exceeded");
-        }
-        if (scope.maxEstimatedTokens > 0 && scope.estimatedTokens > scope.maxEstimatedTokens) {
-            throw new BudgetExceededException(stage, "estimated token limit exceeded");
-        }
-        if (scope.maxEstimatedCost > 0 && scope.estimatedCost > scope.maxEstimatedCost) {
-            throw new BudgetExceededException(stage, "estimated cost limit exceeded");
-        }
-    }
-
-    public final class Scope implements AutoCloseable {
-
-        private final Scope previous;
-        private final long deadlineNanos;
-        private final long maxEstimatedTokens;
-        private final double maxEstimatedCost;
-        private long estimatedTokens;
-        private double estimatedCost;
-
-        private Scope(Scope previous,
-                      long deadlineNanos,
-                      long maxEstimatedTokens,
-                      double maxEstimatedCost) {
-            this.previous = previous;
-            this.deadlineNanos = deadlineNanos;
-            this.maxEstimatedTokens = maxEstimatedTokens;
-            this.maxEstimatedCost = maxEstimatedCost;
-        }
-
-        @Override
-        public void close() {
-            if (currentScope.get() == this) {
-                currentScope.set(previous);
+    public static Scope open(long maxDurationMs) {
+        if (maxDurationMs < 1) throw new IllegalArgumentException("Agent 执行时长预算必须大于 0");
+        Long previous = DEADLINE_NANOS.get();
+        long requested = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxDurationMs);
+        DEADLINE_NANOS.set(previous == null ? requested : Math.min(previous, requested));
+        return () -> {
+            if (previous == null) {
+                DEADLINE_NANOS.remove();
+            } else {
+                DEADLINE_NANOS.set(previous);
             }
+        };
+    }
+
+    public static long remainingMillis() {
+        Long deadline = DEADLINE_NANOS.get();
+        if (deadline == null) return Long.MAX_VALUE;
+        long remainingNanos = deadline - System.nanoTime();
+        if (remainingNanos <= 0) throw new DeadlineExceededException("Agent 已耗尽执行时长预算");
+        return Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+    }
+
+    public static void check(String stage) {
+        try {
+            remainingMillis();
+        } catch (DeadlineExceededException e) {
+            throw new DeadlineExceededException(stage + " 后终止：" + e.getMessage());
         }
     }
 
-    public static class BudgetExceededException extends RuntimeException {
+    @FunctionalInterface
+    public interface Scope extends AutoCloseable {
+        @Override
+        void close();
+    }
 
-        public BudgetExceededException(String stage, String reason) {
-            super("Agent budget exceeded at " + stage + ": " + reason);
+    public static class DeadlineExceededException extends IllegalStateException {
+        public DeadlineExceededException(String message) {
+            super(message);
         }
     }
 }
