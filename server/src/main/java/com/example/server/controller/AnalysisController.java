@@ -104,9 +104,11 @@ public class AnalysisController {
             @RequestParam(required = false) String mode,
             @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) {
         String normalizedGoal = normalizeText(goal, "分析目标");
-        AnalysisMode analysisMode = AnalysisMode.fromRequest(mode);
+        if (mode != null) throw new IllegalArgumentException("分析模式固定为通用分析，不支持自行设置");
+        AnalysisMode analysisMode = AnalysisMode.GENERAL;
         MediaFile mediaFile = mediaService.requireOwnedMedia(id, userId);
-        if (checkpointService.loadResult(id, normalizedGoal, analysisMode) != null) {
+        var existing = checkpointService.loadResult(id, normalizedGoal, analysisMode);
+        if (existing != null && existing.result() != null) {
             // 已有可复用结果，是“已完成”而非“已受理”，用 200 与异步受理区分开。
             return ResponseEntity.ok(Result.ok());
         }

@@ -137,6 +137,17 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                     }
                     redisTemplate.delete(completedKey);
                 }
+                for (Long sourceMediaId : mediaService.sameContentMediaIds(mediaId, contentHash)) {
+                    AgentState reusable = checkpointService.loadResult(sourceMediaId, msg.getUserGoal(), mode);
+                    if (reusable == null || reusable.result() == null
+                            || !aiService.reuseResult(mediaId, sourceMediaId, reusable, mode)) continue;
+                    redisTemplate.opsForValue().set(
+                            completedKey, String.valueOf(mediaId), Duration.ofDays(7));
+                    taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
+                            TaskStatus.completed(reusable), TaskStage.COMPLETED_REUSED);
+                    log.info("video_analysis_reused mediaId={} sourceMediaId={}", mediaId, sourceMediaId);
+                    return;
+                }
             }
             saveStage(mediaId, msg.getUserGoal(), mode, TaskStage.CONSUMING);
             aiService.asyncAnalyze(mediaId, msg.getUserGoal(), mode);
@@ -148,13 +159,14 @@ public class VideoAnalysisConsumer implements RocketMQListener<AnalysisTaskMsg> 
                 log.info("video_analysis_cleanup_after_media_deleted mediaId={}", mediaId);
                 return;
             }
+            AgentState completed = checkpointService.loadResult(mediaId, msg.getUserGoal(), mode);
+            if (completed == null || completed.result() == null) {
+                throw new IllegalStateException("分析未生成可复用结果");
+            }
             redisTemplate.opsForValue().set(
                     completedKey, String.valueOf(mediaId), Duration.ofDays(7));
-            AgentState completed = checkpointService.loadResult(mediaId, msg.getUserGoal(), mode);
-            if (completed != null && completed.result() != null) {
-                taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
-                        TaskStatus.completed(completed), TaskStage.COMPLETED);
-            }
+            taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,
+                    TaskStatus.completed(completed), TaskStage.COMPLETED);
         } catch (AgentExecutionBudget.BudgetExceededException e) {
             saveStage(mediaId, msg.getUserGoal(), mode, TaskStage.BUDGET_EXHAUSTED);
             taskEventService.publishAnalysis(mediaId, msg.getUserGoal(), mode,

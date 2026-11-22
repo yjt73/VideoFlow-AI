@@ -16,8 +16,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -56,7 +57,7 @@ public class VideoContextService {
                     CompletableFuture.supplyAsync(
                             () -> runStage(() -> extractKeyFrames(videoPath, workDir.resolve("frames"))),
                             aiPipelineExecutor
-                    ).exceptionally(error -> Collections.emptyList());
+                    );
             List<TranscriptPart> transcripts = transcriptFuture.join();
             List<FramePart> frames = frameFuture.join();
             return new VideoContext(videoPath, userGoal, merge(transcripts, frames));
@@ -87,7 +88,7 @@ public class VideoContextService {
                 "-vn", "-acodec", "libmp3lame",
                 "-f", "segment", "-segment_time", "60", "-reset_timestamps", "1",
                 outputPattern.toString()
-        ), null);
+        ), null, true);
 
         List<Path> audioFiles;
         try (var paths = Files.list(audioDir)) {
@@ -97,7 +98,7 @@ public class VideoContextService {
         List<TranscriptPart> result = new ArrayList<>();
         for (int i = 0; i < audioFiles.size(); i++) {
             String text = aliyunAsrUtils.audioToText(audioFiles.get(i).toString());
-            if (text != null && !text.startsWith("❌")) {
+            if (text != null && !text.isBlank()) {
                 result.add(new TranscriptPart(i * SEGMENT_MS, (i + 1) * SEGMENT_MS, text));
             }
         }
@@ -117,10 +118,10 @@ public class VideoContextService {
         List<Long> timestamps = new ArrayList<>();
         runCommand(List.of(
                 "ffmpeg", "-y", "-i", videoPath,
-                "-vf", "select=gt(scene\\,0.35),showinfo",
+                "-vf", "select=eq(n\\,0)+gt(scene\\,0.35),showinfo",
                 "-vsync", "vfr",
                 frameDir.resolve("frame_%06d.jpg").toString()
-        ), timestamps);
+        ), timestamps, false);
 
         List<Path> frameFiles;
         try (var paths = Files.list(frameDir)) {
@@ -136,36 +137,47 @@ public class VideoContextService {
         return result;
     }
 
-    private List<VideoContext.VideoSegment> merge(List<TranscriptPart> transcripts, List<FramePart> frames) {
-        List<VideoContext.VideoSegment> result = new ArrayList<>();
+    List<VideoContext.VideoSegment> merge(List<TranscriptPart> transcripts, List<FramePart> frames) {
+        Map<Long, SegmentParts> buckets = new TreeMap<>();
         for (TranscriptPart transcript : transcripts) {
-            List<String> ocrTexts = new ArrayList<>();
-            List<String> evidenceFrames = new ArrayList<>();
-            for (FramePart frame : frames) {
-                if (frame.timestampMs() >= transcript.startMs() && frame.timestampMs() < transcript.endMs()) {
-                    if (frame.ocrText() != null && !frame.ocrText().isBlank()) {
-                        ocrTexts.add(frame.ocrText());
-                    }
-                    evidenceFrames.add(frame.frameName());
-                }
-            }
-            result.add(new VideoContext.VideoSegment(
-                    transcript.startMs(),
-                    transcript.endMs(),
-                    transcript.text(),
-                    ocrTexts,
-                    evidenceFrames
-            ));
+            SegmentParts bucket = buckets.computeIfAbsent(transcript.startMs(),
+                    start -> new SegmentParts(start, transcript.endMs()));
+            bucket.transcript = transcript.text();
+            bucket.endMs = Math.max(bucket.endMs, transcript.endMs());
         }
-        return result;
+        for (FramePart frame : frames) {
+            long start = Math.max(0, frame.timestampMs()) / SEGMENT_MS * SEGMENT_MS;
+            SegmentParts bucket = buckets.computeIfAbsent(start,
+                    ignored -> new SegmentParts(start, start + SEGMENT_MS));
+            if (frame.ocrText() != null && !frame.ocrText().isBlank()) bucket.ocrTexts.add(frame.ocrText());
+            bucket.evidenceFrames.add(frame.frameName());
+        }
+        return buckets.values().stream().map(bucket -> new VideoContext.VideoSegment(
+                bucket.startMs, bucket.endMs, bucket.transcript,
+                bucket.ocrTexts, bucket.evidenceFrames)).toList();
     }
 
-    private void runCommand(List<String> command, List<Long> timestamps) throws Exception {
+    private static final class SegmentParts {
+        private final long startMs;
+        private long endMs;
+        private String transcript = "";
+        private final List<String> ocrTexts = new ArrayList<>();
+        private final List<String> evidenceFrames = new ArrayList<>();
+
+        private SegmentParts(long startMs, long endMs) {
+            this.startMs = startMs;
+            this.endMs = endMs;
+        }
+    }
+
+    private void runCommand(List<String> command, List<Long> timestamps, boolean allowNoAudio) throws Exception {
         Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        boolean noStream = false;
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                if (line.contains("does not contain any stream")) noStream = true;
                 if (timestamps != null && line.contains("showinfo")) {
                     Matcher matcher = PTS_TIME.matcher(line);
                     if (matcher.find()) {
@@ -174,7 +186,8 @@ public class VideoContextService {
                 }
             }
         }
-        if (!process.waitFor(15, TimeUnit.MINUTES) || process.exitValue() != 0) {
+        if (!process.waitFor(15, TimeUnit.MINUTES)
+                || (process.exitValue() != 0 && !(allowNoAudio && noStream))) {
             process.destroyForcibly();
             throw new IllegalStateException("FFmpeg 执行失败");
         }
@@ -188,10 +201,10 @@ public class VideoContextService {
         }
     }
 
-    private record TranscriptPart(long startMs, long endMs, String text) {
+    record TranscriptPart(long startMs, long endMs, String text) {
     }
 
-    private record FramePart(long timestampMs, String ocrText, String frameName) {
+    record FramePart(long timestampMs, String ocrText, String frameName) {
     }
 
     @FunctionalInterface

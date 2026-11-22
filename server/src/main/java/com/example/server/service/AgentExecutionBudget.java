@@ -13,7 +13,7 @@ public class AgentExecutionBudget {
     private final ThreadLocal<Scope> currentScope = new ThreadLocal<>();
 
     public AgentExecutionBudget(
-            @Value("${agent.budget.max-duration-ms:120000}") long defaultMaxDurationMs,
+            @Value("${agent.budget.max-duration-ms:300000}") long defaultMaxDurationMs,
             @Value("${agent.budget.max-estimated-tokens:50000}") long maxEstimatedTokens,
             @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost) {
         this.defaultMaxDurationMs = defaultMaxDurationMs;

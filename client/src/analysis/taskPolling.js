@@ -1,14 +1,15 @@
-const ACTIVE_STATES = new Set(['PENDING', 'QUEUED', 'RUNNING', 'RETRYING'])
-const TERMINAL_STATES = new Set(['SUCCESS', 'FAILED', 'DEAD', 'CANCELLED'])
+const ACTIVE_STATES = new Set(['QUEUED', 'PROCESSING'])
+const TERMINAL_STATES = new Set(['COMPLETED', 'FAILED'])
 
 export const pollAnalysisTask = async ({
-  taskId,
+  mediaId,
+  goal,
   apiFetch,
   intervalMs = 2000,
   onUpdate = () => {},
   signal
 }) => {
-  if (!taskId) throw new Error('缺少任务编号')
+  if (!mediaId || !goal) throw new Error('缺少媒体编号或分析目标')
 
   const controller = new AbortController()
   const forwardAbort = () => controller.abort(signal?.reason)
@@ -19,14 +20,22 @@ export const pollAnalysisTask = async ({
   }
 
   try {
+    let notStartedPolls = 0
     while (!controller.signal.aborted) {
-      const task = await apiFetch(`/tasks/${taskId}`, {
+      const params = new URLSearchParams({ id: String(mediaId), goal })
+      const task = await apiFetch(`/analysis/analysis-status?${params}`, {
         signal: controller.signal
       })
       onUpdate(task)
-      if (TERMINAL_STATES.has(task.status)) return task
-      if (!ACTIVE_STATES.has(task.status)) {
-        throw new Error(`未知任务状态: ${task.status}`)
+      if (TERMINAL_STATES.has(task.state)) return task
+      if (task.state === 'NOT_STARTED') {
+        if (++notStartedPolls >= 3) throw new Error('分析任务未启动，请重试')
+        await wait(intervalMs, controller.signal)
+        continue
+      }
+      notStartedPolls = 0
+      if (!ACTIVE_STATES.has(task.state)) {
+        throw new Error(`未知任务状态: ${task.state}`)
       }
       await wait(intervalMs, controller.signal)
     }

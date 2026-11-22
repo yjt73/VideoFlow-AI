@@ -15,7 +15,7 @@ public class OcrUtils {
     @Value("${tool.ocr.command:tesseract}")
     private String ocrCommand;
 
-    /** 识别图片中的文字；识别失败时返回空文本。 */
+    /** 识别图片中的文字；识别失败时抛错，避免把失败结果缓存为无文字。 */
     public String recognize(File image) {
         try {
             Process process = new ProcessBuilder(
@@ -36,10 +36,10 @@ public class OcrUtils {
                     }
                 }
             }
-            return process.waitFor() == 0 ? text.toString().trim() : "";
+            if (process.waitFor() != 0) throw new IllegalStateException("OCR 进程执行失败");
+            return text.toString().trim();
         } catch (Exception e) {
-            System.err.println("OCR 识别失败: " + image.getName() + ", " + e.getMessage());
-            return "";
+            throw new IllegalStateException("OCR 识别失败: " + image.getName(), e);
         }
     }
 }

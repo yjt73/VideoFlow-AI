@@ -160,6 +160,13 @@ public class MediaController {
         return Result.ok(chunkUploadService.uploadedChunks(uploadId, currentUser.userId()));
     }
 
+    @DeleteMapping("/upload")
+    public Result<Void> cancelUpload(@RequestParam String uploadId,
+                                     @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        chunkUploadService.cancel(uploadId, currentUser.userId());
+        return Result.ok();
+    }
+
     @PostMapping("/upload-chunk")
     public Result<Void> uploadChunk(@RequestParam String uploadId,
                                      @RequestParam int chunkIndex,

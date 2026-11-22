@@ -39,12 +39,12 @@ public class AliyunAsrUtils {
     public String audioToText(String filePath) {
         File file = new File(filePath);
         if (!file.exists()) {
-            return "错误：找不到音频文件";
+            throw new IllegalArgumentException("找不到音频文件");
         }
         try {
             return retryExecutor.execute("ASR", null, () -> callAsr(file));
         } catch (Exception exception) {
-            return "识别最终失败: " + exception.getMessage();
+            throw new IllegalStateException("ASR 识别失败", exception);
         }
     }
 

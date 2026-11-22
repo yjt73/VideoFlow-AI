@@ -99,7 +99,7 @@ describe('apiFetch 请求控制', () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'http://localhost:9090/media/9/qa',
+      '/media/9/qa',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({

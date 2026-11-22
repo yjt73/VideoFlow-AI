@@ -176,7 +176,7 @@
               <button
                   class="dock-item ai-core"
                   :disabled="item.status !== 'COMPLETED'"
-                  @click="aiAnalyze(item.id)"
+                  @click="openAnalysis(item.id)"
               >
                 <span class="item-icon">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
@@ -215,7 +215,26 @@
           <button class="close-btn" @click="closeSidebar">×</button>
         </div>
         <div class="sidebar-body">
-          <div v-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
+          <div v-if="sidebar.type === 'ai'" class="analysis-panel">
+            <div class="analysis-config">
+              <p>分析模式：通用分析（固定）</p>
+              <label for="analysis-goal">分析目标</label>
+              <textarea
+                id="analysis-goal"
+                v-model="analysisGoal"
+                maxlength="500"
+                :disabled="analysisBusy"
+                @input="sidebar.content = '该目标尚未查询，点击“开始分析”或离开输入框查看已有结果。'"
+                @blur="loadAnalysisResult"
+              ></textarea>
+              <button @click="submitAnalysis" :disabled="analysisBusy || !analysisGoal.trim()">
+                {{ analysisBusy ? '分析中...' : '开始分析' }}
+              </button>
+            </div>
+            <div v-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
+            <div v-else class="markdown-content" v-html="renderedMarkdown"></div>
+          </div>
+          <div v-else-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
           <div v-else-if="sidebar.type === 'qa'" class="qa-panel">
             <div class="qa-messages">
               <div v-for="(entry, index) in qa.messages" :key="index" class="qa-message" :class="entry.role">
@@ -241,8 +260,7 @@
             </div>
           </div>
           <div v-else>
-            <div v-if="sidebar.type === 'ai'" class="markdown-content" v-html="renderedMarkdown"></div>
-            <div v-else class="text-content"><pre>{{ sidebar.content }}</pre></div>
+            <div class="text-content"><pre>{{ sidebar.content }}</pre></div>
           </div>
         </div>
       </div>
@@ -289,7 +307,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { marked } from 'marked'
 import { apiFetch, askVideoQuestion, clearToken, getToken, setToken } from './api'
 import { calculateFileMd5 } from './upload/md5'
-import { MultipartTransport } from './upload/multipartTransport'
+import { ChunkUploadTransport } from './upload/chunkTransport'
 import { UploadManager, UPLOAD_STATES } from './upload/uploadManager'
 import { pollAnalysisTask } from './analysis/taskPolling'
 
@@ -301,6 +319,11 @@ const uploading = ref(false)
 const list = ref([])
 const isDragOver = ref(false)
 const sidebar = ref({ visible: false, type: 'ai', title: '', content: '', loading: false })
+const DEFAULT_ANALYSIS_GOAL = '理解视频核心内容并生成结构化分析报告'
+const analysisMediaId = ref(null)
+const analysisGoal = ref(DEFAULT_ANALYSIS_GOAL)
+const analysisGoals = ref({})
+const analysisBusy = ref(false)
 const qa = ref({
   mediaId: null,
   conversationId: null,
@@ -334,9 +357,9 @@ const activeUploadStates = new Set([
   UPLOAD_STATES.FAILED
 ])
 
-const multipartTransport = new MultipartTransport({ apiFetch })
+const uploadTransport = new ChunkUploadTransport({ apiFetch })
 const uploadManager = new UploadManager({
-  transport: multipartTransport,
+  transport: uploadTransport,
   calculateFileMd5,
   onChange: (snapshot) => {
     uploadTask.value = snapshot
@@ -556,7 +579,7 @@ const formatTime = (timeStr) => {
 const playMedia = async (item) => {
   const playbackWindow = window.open('', '_blank')
   try {
-    const url = await multipartTransport.accessUrl(item.id)
+    const url = await uploadTransport.accessUrl(item.id)
     if (playbackWindow) {
       playbackWindow.opener = null
       playbackWindow.location.replace(url)
@@ -620,79 +643,85 @@ const transcribe = async (id) => {
   }
 }
 
-// 创建全局分析任务，并按 taskId 查询独立任务状态。
-const aiAnalyze = async (id) => {
-  const item = list.value.find(i => i.id === id)
-
-  // 1. 如果已经有结果，直接显示
-  if (item && item.aiSummary && !item.aiSummary.includes("任务已") && !item.aiSummary.includes("正在")) {
-    openSidebar('ai', 'AI 智能总结')
-    sidebar.value.content = item.aiSummary
-    sidebar.value.loading = false
-    return
-  }
-
-  // 2. 如果正在轮询，直接打开侧边栏
-  if (pollingTimers.value[id] && pollingTimers.value[id].type === 'ai') {
-    openSidebar('ai', 'AI 智能总结')
-    sidebar.value.loading = true
-    const active = pollingTimers.value[id]
-    sidebar.value.content = `任务 ${active.taskId}\n\n正在后台处理，请勿重复提交。`
-    sidebar.value.loading = false
-    return
-  }
-
-  // 3. 准备提交请求，打开侧边栏loading
+// 目标可编辑；模式始终使用后端默认的 GENERAL。
+const openAnalysis = async (id) => {
+  analysisMediaId.value = id
+  analysisGoal.value = analysisGoals.value[id] || DEFAULT_ANALYSIS_GOAL
+  analysisBusy.value = pollingTimers.value[id]?.type === 'ai'
   openSidebar('ai', 'AI 智能总结')
+  sidebar.value.loading = false
+  if (analysisBusy.value) {
+    sidebar.value.content = '正在后台分析视频'
+  } else {
+    await loadAnalysisResult()
+  }
+}
+
+const loadAnalysisResult = async () => {
+  const id = analysisMediaId.value
+  const goal = analysisGoal.value.trim()
+  if (!id || !goal || analysisBusy.value) return
+  try {
+    const params = new URLSearchParams({ id: String(id), goal })
+    const task = await apiFetch(`/analysis/analysis-status?${params}`)
+    if (analysisMediaId.value !== id || analysisGoal.value.trim() !== goal || analysisBusy.value) return
+    sidebar.value.content = task.state === 'COMPLETED'
+      ? task.result
+      : '该目标暂无分析结果，点击“开始分析”创建任务。'
+  } catch (error) {
+    if (analysisMediaId.value === id) sidebar.value.content = error.message
+  }
+}
+
+const submitAnalysis = async () => {
+  const id = analysisMediaId.value
+  const goal = analysisGoal.value.trim()
+  if (!id || !goal || analysisBusy.value) return
+  analysisGoals.value[id] = goal
+  analysisBusy.value = true
   sidebar.value.loading = true
-  sidebar.value.content = "🚀 正在向分布式集群请求计算资源..."
+  sidebar.value.content = '正在提交分析任务...'
 
   try {
-    const created = await apiFetch(`/media/${id}/analysis-tasks`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    })
+    const params = new URLSearchParams({ id: String(id), goal })
+    await apiFetch(`/analysis/ai?${params}`, { method: 'POST' })
     const controller = new AbortController()
     pollingTimers.value[id] = {
       type: 'ai',
-      taskId: created.taskId,
-      controller
+      controller,
+      goal
     }
     const terminal = await pollAnalysisTask({
-      taskId: created.taskId,
+      mediaId: id,
+      goal,
       apiFetch,
       signal: controller.signal,
       onUpdate: (task) => {
-        sidebar.value.loading = false
-        sidebar.value.content = [
-          `任务编号：${task.taskId}`,
-          `状态：${task.status}`,
-          `阶段：${task.currentStage || '等待调度'}`,
-          `进度：${task.progress ?? 0}%`,
-          task.errorMessage ? `错误：${task.errorMessage}` : ''
-        ].filter(Boolean).join('\n\n')
+        if (analysisMediaId.value === id && analysisGoal.value.trim() === goal) {
+          sidebar.value.loading = false
+          sidebar.value.content = task.result || task.message || '正在分析视频'
+        }
       }
     })
-    if (terminal.status === 'SUCCESS') {
+    if (terminal.state === 'COMPLETED') {
       await fetchList()
-      const completed = list.value.find(item => item.id === id)
-      sidebar.value.content = completed?.aiSummary || '分析已完成'
+      if (analysisMediaId.value === id) sidebar.value.content = terminal.result || '分析已完成'
       sidebar.value.loading = false
       showMsg('✅ AI 分析完成')
     } else {
-      sidebar.value.content = terminal.errorMessage || `任务已结束：${terminal.status}`
+      if (analysisMediaId.value === id) sidebar.value.content = terminal.message || `任务已结束：${terminal.state}`
       sidebar.value.loading = false
-      showMsg(`⚠️ AI 任务已结束：${terminal.status}`, true)
+      showMsg(`⚠️ AI 任务已结束：${terminal.state}`, true)
     }
   } catch (e) {
     if (e.name !== 'AbortError') {
-      sidebar.value.content = "Error: " + e.message
+      if (analysisMediaId.value === id) sidebar.value.content = "Error: " + e.message
       sidebar.value.loading = false
       showMsg('❌ AI 分析任务提交或查询失败', true)
     }
   } finally {
     delete pollingTimers.value[id]
+    if (analysisMediaId.value === id) analysisBusy.value = false
   }
 }
 
@@ -1093,6 +1122,13 @@ html, body, #app {
 .close-btn { background: none; border: none; color: var(--text-sub); padding: 5px; cursor: pointer; transition: color 0.3s; }
 .close-btn:hover { color: var(--accent-lime); }
 .sidebar-body { flex: 1; overflow-y: auto; padding: 30px; }
+.analysis-config { display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 1px solid var(--border-tech); }
+.analysis-config p { color: var(--text-sub); font-size: 0.85rem; }
+.analysis-config label { color: var(--accent-lime); }
+.analysis-config textarea { min-height: 90px; resize: vertical; padding: 12px; background: #000; border: 1px solid var(--border-tech); color: var(--text-main); font: inherit; }
+.analysis-config textarea:focus { outline: none; border-color: var(--accent-lime); }
+.analysis-config button { align-self: flex-start; padding: 10px 20px; border: 1px solid var(--accent-lime); background: transparent; color: var(--accent-lime); cursor: pointer; }
+.analysis-config button:disabled { opacity: 0.4; cursor: not-allowed; }
 .loading-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-sub); gap: 20px; }
 .markdown-content, .text-content { line-height: 1.8; color: var(--text-main); font-size: 0.95rem; }
 .text-content pre { white-space: pre-wrap; font-family: monospace; background: #000; padding: 15px; border-radius: 8px; border: 1px solid var(--border-tech); color: #ccc; }

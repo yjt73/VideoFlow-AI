@@ -1,5 +1,6 @@
 package com.example.server.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.example.server.entity.MediaFile;
 import com.example.server.dto.VideoContext;
@@ -140,6 +141,16 @@ public class MediaService {
         String persisted = mediaFile == null ? null : mediaFile.getContentHash();
         rememberContentHash(mediaId, persisted);
         return persisted;
+    }
+
+    public List<Long> sameContentMediaIds(Long mediaId, String contentHash) {
+        if (contentHash == null || !contentHash.matches("[a-f0-9]{32}")) return List.of();
+        return mediaFileMapper.selectList(new LambdaQueryWrapper<MediaFile>()
+                        .select(MediaFile::getId)
+                        .eq(MediaFile::getContentHash, contentHash)
+                        .ne(MediaFile::getId, mediaId)
+                        .orderByDesc(MediaFile::getId))
+                .stream().map(MediaFile::getId).toList();
     }
 
     public void deleteOwnedMedia(Long mediaId, Long userId) {

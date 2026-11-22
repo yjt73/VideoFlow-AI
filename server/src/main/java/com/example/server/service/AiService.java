@@ -162,7 +162,9 @@ public class AiService {
                     TaskStage.VIDEO_CONTEXT);
             long started = System.nanoTime();
             try {
-                VideoContext context = videoContextService.build(mediaFile.getFilePath(), userGoal, traceId);
+                VideoContext extracted = videoContextService.build(
+                        mediaService.readableSource(mediaFile.getFilePath()), userGoal, traceId);
+                VideoContext context = new VideoContext(mediaFile.getFilePath(), userGoal, extracted.segments());
                 agentCheckpointService.saveContext(mediaFile.getId(), context);
                 redisTemplate.opsForValue().set(
                         AnalysisTaskKeys.contextOwner(contentHash), String.valueOf(mediaFile.getId()),
@@ -186,19 +188,29 @@ public class AiService {
                                            String traceId,
                                            String contentHash) {
         String owner = redisTemplate.opsForValue().get(AnalysisTaskKeys.contextOwner(contentHash));
-        if (owner == null) return null;
-        Long ownerId;
+        Long ownerId = null;
         try {
-            ownerId = Long.valueOf(owner);
+            if (owner != null) ownerId = Long.valueOf(owner);
         } catch (NumberFormatException exception) {
             redisTemplate.delete(AnalysisTaskKeys.contextOwner(contentHash));
-            return null;
         }
-        if (ownerId.equals(mediaFile.getId())) return null;
-        VideoContext source = agentCheckpointService.loadContext(ownerId);
-        if (source == null) return null;
+        if (ownerId != null && !ownerId.equals(mediaFile.getId())) {
+            VideoContext source = agentCheckpointService.loadContext(ownerId);
+            if (source != null) return copyAgentContext(mediaFile, userGoal, traceId, contentHash, source);
+        }
+        for (Long candidateId : mediaService.sameContentMediaIds(mediaFile.getId(), contentHash)) {
+            VideoContext source = agentCheckpointService.loadContext(candidateId);
+            if (source != null) return copyAgentContext(mediaFile, userGoal, traceId, contentHash, source);
+        }
+        return null;
+    }
+
+    private VideoContext copyAgentContext(MediaFile mediaFile, String userGoal, String traceId,
+                                          String contentHash, VideoContext source) {
         VideoContext localized = new VideoContext(mediaFile.getFilePath(), userGoal, source.segments());
         agentCheckpointService.saveContext(mediaFile.getId(), localized);
+        redisTemplate.opsForValue().set(AnalysisTaskKeys.contextOwner(contentHash),
+                String.valueOf(mediaFile.getId()), Duration.ofDays(7));
         telemetry.increment(traceId, "contextContentReuses", 1);
         return localized;
     }
@@ -223,7 +235,7 @@ public class AiService {
 
         try {
             //只做语音转文字
-            String text = aiAnalysisStrategy.transcribe(mediaFile.getFilePath());
+            String text = aiAnalysisStrategy.transcribe(mediaService.readableSource(mediaFile.getFilePath()));
             mediaFile.setTranscriptText(text);
 
             //保存数据库

@@ -82,6 +82,23 @@ public class ChunkUploadService {
         return result;
     }
 
+    public void cancel(String uploadId, Long userId) {
+        validateUploadId(uploadId);
+        RLock mergeLock = redissonClient.getLock("lock:upload:merge:" + uploadId);
+        if (!mergeLock.tryLock()) {
+            throw new BusinessException(ErrorCode.CONFLICT, "该上传任务正在合并中，请稍后重试");
+        }
+        try {
+            requireUpload(uploadId, userId);
+            for (int chunkIndex : uploadedChunks(uploadId, userId)) {
+                minioUtils.removeObject(chunkObjectName(uploadId, chunkIndex));
+            }
+            redisTemplate.delete(List.of(uploadKey(uploadId), partsKey(uploadId)));
+        } finally {
+            if (mergeLock.isHeldByCurrentThread()) mergeLock.unlock();
+        }
+    }
+
     public void uploadChunk(String uploadId,
                             int chunkIndex,
                             int totalChunks,

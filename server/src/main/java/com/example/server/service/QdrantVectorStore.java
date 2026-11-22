@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +33,7 @@ public class QdrantVectorStore {
     private final OkHttpClient client;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public QdrantVectorStore(
             @Value("${vector.qdrant.enabled:true}") boolean enabled,
             @Value("${vector.qdrant.url:http://localhost:6333}") String baseUrl,

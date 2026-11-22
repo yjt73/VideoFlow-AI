@@ -1,6 +1,7 @@
 package com.example.server.security;
 
 import com.example.server.service.AuthenticatedUser;
+import com.example.server.service.AuthService;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -52,6 +53,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     List.of(new SimpleGrantedAuthority("ROLE_" + principal.role()))
             );
             SecurityContextHolder.getContext().setAuthentication(authentication);
+            request.setAttribute(AuthService.REQUEST_USER_ID, principal.userId());
             filterChain.doFilter(request, response);
         } catch (JwtException | IllegalArgumentException exception) {
             SecurityContextHolder.clearContext();

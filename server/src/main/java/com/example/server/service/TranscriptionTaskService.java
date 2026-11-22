@@ -3,6 +3,7 @@ package com.example.server.service;
 import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.entity.MediaFile;
+import com.example.server.dto.VideoContext;
 import com.example.server.mapper.MediaFileMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,17 +21,20 @@ public class TranscriptionTaskService {
 
     private final MediaFileMapper mediaFileMapper;
     private final VideoTranscriptionService videoTranscriptionService;
+    private final AgentCheckpointService checkpointService;
     private final MediaService mediaService;
     private final StringRedisTemplate redisTemplate;
     private final TaskEventService taskEventService;
 
     public TranscriptionTaskService(MediaFileMapper mediaFileMapper,
                                     VideoTranscriptionService videoTranscriptionService,
+                                    AgentCheckpointService checkpointService,
                                     MediaService mediaService,
                                     StringRedisTemplate redisTemplate,
                                     TaskEventService taskEventService) {
         this.mediaFileMapper = mediaFileMapper;
         this.videoTranscriptionService = videoTranscriptionService;
+        this.checkpointService = checkpointService;
         this.mediaService = mediaService;
         this.redisTemplate = redisTemplate;
         this.taskEventService = taskEventService;
@@ -57,8 +61,16 @@ public class TranscriptionTaskService {
             setState(mediaId, TaskStatus.State.PROCESSING, ACTIVE_TTL);
             taskEventService.publishTranscription(mediaId,
                     TaskStatus.of(TaskStatus.State.PROCESSING, "正在识别视频语音"), TaskStage.ASR);
-            mediaFile.setTranscriptText(videoTranscriptionService.transcribe(
-                    mediaService.readableSource(mediaFile.getFilePath())));
+            String transcript = mediaFile.getTranscriptText();
+            if (transcript == null || transcript.isBlank()) {
+                VideoContext context = checkpointService.loadContext(mediaId);
+                transcript = context == null ? null : context.transcriptText();
+            }
+            if (transcript == null || transcript.isBlank()) {
+                transcript = videoTranscriptionService.transcribe(
+                        mediaService.readableSource(mediaFile.getFilePath()));
+            }
+            mediaFile.setTranscriptText(transcript);
             mediaFileMapper.updateById(mediaFile);
             mediaService.invalidateUserList(mediaFile.getUserId());
             setState(mediaId, TaskStatus.State.COMPLETED, Duration.ofDays(7));

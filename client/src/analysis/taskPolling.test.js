@@ -2,47 +2,36 @@ import { describe, expect, it, vi } from 'vitest'
 import { pollAnalysisTask } from './taskPolling'
 
 describe('pollAnalysisTask', () => {
-  it('continues through active states and returns the success state', async () => {
+  it('polls the current analysis status API until completion', async () => {
     const apiFetch = vi.fn()
-      .mockResolvedValueOnce({ taskId: 'task-1', status: 'PENDING', progress: 0 })
-      .mockResolvedValueOnce({ taskId: 'task-1', status: 'RUNNING', progress: 40 })
-      .mockResolvedValueOnce({ taskId: 'task-1', status: 'SUCCESS', progress: 100 })
-    const onUpdate = vi.fn()
-
-    const result = await pollAnalysisTask({
-      taskId: 'task-1',
-      apiFetch,
-      intervalMs: 0,
-      onUpdate
-    })
-
-    expect(result.status).toBe('SUCCESS')
+      .mockResolvedValueOnce({ state: 'QUEUED', message: '等待中' })
+      .mockResolvedValueOnce({ state: 'PROCESSING', message: '分析中' })
+      .mockResolvedValueOnce({ state: 'COMPLETED', result: '结果' })
+    const result = await pollAnalysisTask({ mediaId: 7, goal: '分析视频', apiFetch, intervalMs: 0 })
+    expect(result).toEqual({ state: 'COMPLETED', result: '结果' })
     expect(apiFetch).toHaveBeenCalledTimes(3)
-    expect(apiFetch).toHaveBeenNthCalledWith(
-      1,
-      '/tasks/task-1',
-      expect.objectContaining({ signal: expect.any(AbortSignal) })
-    )
-    expect(onUpdate).toHaveBeenLastCalledWith(result)
+    expect(apiFetch.mock.calls[0][0]).toBe('/analysis/analysis-status?id=7&goal=%E5%88%86%E6%9E%90%E8%A7%86%E9%A2%91')
   })
 
-  it.each(['FAILED', 'DEAD', 'CANCELLED'])(
-    'stops immediately at terminal state %s',
-    async (status) => {
-      const apiFetch = vi.fn().mockResolvedValue({
-        taskId: 'task-1',
-        status,
-        errorMessage: 'stopped'
-      })
+  it('stops on failed status', async () => {
+    const apiFetch = vi.fn().mockResolvedValue({ state: 'FAILED', message: '失败' })
+    expect(await pollAnalysisTask({ mediaId: 7, goal: '分析视频', apiFetch, intervalMs: 0 }))
+      .toEqual({ state: 'FAILED', message: '失败' })
+  })
 
-      const result = await pollAnalysisTask({
-        taskId: 'task-1',
-        apiFetch,
-        intervalMs: 0
-      })
+  it('retries a transient not started status', async () => {
+    const apiFetch = vi.fn()
+      .mockResolvedValueOnce({ state: 'NOT_STARTED' })
+      .mockResolvedValueOnce({ state: 'QUEUED' })
+      .mockResolvedValueOnce({ state: 'COMPLETED', result: '结果' })
+    expect(await pollAnalysisTask({ mediaId: 7, goal: '分析视频', apiFetch, intervalMs: 0 }))
+      .toEqual({ state: 'COMPLETED', result: '结果' })
+  })
 
-      expect(result.status).toBe(status)
-      expect(apiFetch).toHaveBeenCalledTimes(1)
-    }
-  )
+  it('reports an analysis task that never starts', async () => {
+    const apiFetch = vi.fn().mockResolvedValue({ state: 'NOT_STARTED' })
+    await expect(pollAnalysisTask({ mediaId: 7, goal: '分析视频', apiFetch, intervalMs: 0 }))
+      .rejects.toThrow('分析任务未启动，请重试')
+    expect(apiFetch).toHaveBeenCalledTimes(3)
+  })
 })
