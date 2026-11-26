@@ -15,3 +15,6 @@ minio/data/
  
 
 .runtime/
+
+# Local documentation is kept outside version control.
+docs/
