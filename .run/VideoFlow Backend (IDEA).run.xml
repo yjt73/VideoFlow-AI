@@ -1,0 +1,13 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="VideoFlow Backend (IDEA)" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="com.example.server.ServerApplication" />
+    <module name="server" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/server" />
+    <option name="envFilePaths">
+      <option value="$PROJECT_DIR$/.env" />
+    </option>
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

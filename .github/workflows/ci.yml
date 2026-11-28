@@ -16,7 +16,12 @@ jobs:
         working-directory: .
         run: |
           bash -n scripts/dev-up.sh
+          bash -n scripts/start-backend.sh
+          bash -n scripts/load-env.sh
+          bash scripts/tests/load-env.test.sh
+          cp .env.example .env
           docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.example -f compose.yaml -f compose.dev.yaml config --quiet
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

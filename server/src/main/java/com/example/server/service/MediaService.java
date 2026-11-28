@@ -207,6 +207,10 @@ public class MediaService {
         return minioUtils.readableSource(source);
     }
 
+    public String publicReadableSource(String source) {
+        return minioUtils.publicReadableSource(source);
+    }
+
     public String normalizeVideoFilename(String filename) {
         if (filename == null || filename.isBlank()) {
             throw new IllegalArgumentException("视频文件名不能为空");

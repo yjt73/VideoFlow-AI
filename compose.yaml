@@ -1,0 +1,151 @@
+name: videoflow-ai
+
+services:
+  videoflow-ai:
+    container_name: videoflow-ai
+    build: .
+    image: videoflow-ai:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: 9090
+      DB_URL: jdbc:mysql://mysql:3306/media_db?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf-8&allowPublicKeyRetrieval=true
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      QDRANT_URL: http://qdrant:6333
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      ROCKETMQ_NAME_SERVER: rmqnamesrv:9876
+      FFMPEG_DIR: /usr/bin
+      OCR_COMMAND: tesseract
+      YTDLP_PATH: yt-dlp
+    ports:
+      - "127.0.0.1:5173:9090"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      rmq-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: media_db
+      MYSQL_USER: ${MYSQL_APP_USER:-dovideo}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - ./redis/data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY is required}
+    volumes:
+      - ./qdrant/data:/qdrant/storage
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./minio/data:/data
+
+  rmqnamesrv:
+    image: apache/rocketmq:5.3.4
+    restart: unless-stopped
+    environment:
+      JAVA_OPT_EXT: -server -Xms256m -Xmx256m -Xmn128m
+    command: sh mqnamesrv
+
+  rmq-volume-init:
+    image: apache/rocketmq:5.3.4
+    user: "0:0"
+    entrypoint: ["sh", "-c"]
+    command:
+      - "mkdir -p /home/rocketmq/store /home/rocketmq/logs && chown -R 3000:3000 /home/rocketmq/store /home/rocketmq/logs"
+    volumes:
+      - rocketmq-store:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
+
+  rmqbroker:
+    image: apache/rocketmq:5.3.4
+    restart: unless-stopped
+    environment:
+      NAMESRV_ADDR: rmqnamesrv:9876
+      JAVA_OPT_EXT: -server -Xms256m -Xmx256m -Xmn128m
+    volumes:
+      - ./rocketmq/broker.compose.conf:/home/rocketmq/broker.conf:ro
+      - rocketmq-store:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
+    command: sh mqbroker -n rmqnamesrv:9876 -c /home/rocketmq/broker.conf
+    depends_on:
+      rmqnamesrv:
+        condition: service_started
+      rmq-volume-init:
+        condition: service_completed_successfully
+
+  rmq-topics:
+    image: apache/rocketmq:5.3.4
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        for i in $$(seq 1 60); do
+          if $$ROCKETMQ_HOME/bin/mqadmin clusterList -n rmqnamesrv:9876 2>/dev/null | grep -q broker-a; then
+            $$ROCKETMQ_HOME/bin/mqadmin updateTopic -n rmqnamesrv:9876 -c DefaultCluster -t video-analysis-topic &&
+            $$ROCKETMQ_HOME/bin/mqadmin updateTopic -n rmqnamesrv:9876 -c DefaultCluster -t video-analysis-dead-topic &&
+            exit 0;
+          fi;
+          sleep 2;
+        done;
+        exit 1
+    depends_on:
+      rmqbroker:
+        condition: service_started
+
+volumes:
+  rocketmq-store:
+  rocketmq-logs:

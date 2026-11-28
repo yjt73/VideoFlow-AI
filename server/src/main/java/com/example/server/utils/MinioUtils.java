@@ -27,15 +27,27 @@ public class MinioUtils {
     private static final Logger log = LoggerFactory.getLogger(MinioUtils.class);
 
     private final MinioClient minioClient;
+    private final MinioClient publicMinioClient;
     private final String bucketName;
     private final String endpoint;
 
     public MinioUtils(MinioClient minioClient,
                       @Value("${minio.bucketName}") String bucketName,
-                      @Value("${minio.endpoint}") String endpoint) {
+                      @Value("${minio.endpoint}") String endpoint,
+                      @Value("${minio.public-endpoint:}") String publicEndpoint,
+                      @Value("${minio.region:us-east-1}") String region,
+                      @Value("${minio.accessKey}") String accessKey,
+                      @Value("${minio.secretKey}") String secretKey) {
         this.minioClient = minioClient;
         this.bucketName = bucketName;
         this.endpoint = endpoint.replaceAll("/+$", "");
+        this.publicMinioClient = publicEndpoint == null || publicEndpoint.isBlank()
+                ? minioClient
+                : MinioClient.builder()
+                        .endpoint(publicEndpoint)
+                        .region(region)
+                        .credentials(accessKey, secretKey)
+                        .build();
     }
 
     public String uploadFile(MultipartFile file) throws Exception {
@@ -142,9 +154,17 @@ public class MinioUtils {
     }
 
     public String readableSource(String source) {
+        return presignedSource(source, minioClient);
+    }
+
+    public String publicReadableSource(String source) {
+        return presignedSource(source, publicMinioClient);
+    }
+
+    private String presignedSource(String source, MinioClient signingClient) {
         if (source == null || !source.startsWith(endpoint + "/" + bucketName + "/")) return source;
         try {
-            return minioClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
+            return signingClient.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
                     .method(Method.GET)
                     .bucket(bucketName)
                     .object(objectName(source))

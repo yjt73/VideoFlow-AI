@@ -148,7 +148,7 @@
       <section v-if="list.length > 0" class="workspace-section">
         <div class="section-header">
           <div class="library-title">
-            <h3>视频资料库</h3>
+            <h3>视频工作台</h3>
             <div class="count-chip">{{ list.length }} 个视频</div>
           </div>
           <label class="library-search">

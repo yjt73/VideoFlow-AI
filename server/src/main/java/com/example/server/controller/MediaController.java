@@ -93,7 +93,7 @@ public class MediaController {
     public Result<String> playback(@RequestParam Long id,
                                    @RequestAttribute(AuthService.REQUEST_USER_ID) Long userId) {
         MediaFile mediaFile = mediaService.requireOwnedMedia(id, userId);
-        return Result.ok(mediaService.readableSource(mediaFile.getFilePath()));
+        return Result.ok(mediaService.publicReadableSource(mediaFile.getFilePath()));
     }
 
     @DeleteMapping("/delete")

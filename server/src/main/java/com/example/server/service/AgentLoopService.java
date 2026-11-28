@@ -42,7 +42,7 @@ public class AgentLoopService {
                             EvidenceVerificationService evidenceVerificationService,
                             TaskEventService taskEventService,
                             @Value("${agent.budget.max-rounds:2}") int maxRounds,
-                            @Value("${agent.budget.max-duration-ms:120000}") long maxDurationMs,
+                            @Value("${agent.budget.max-duration-ms:1200000}") long maxDurationMs,
                             @Value("${agent.budget.max-estimated-tokens:50000}") long maxEstimatedTokens,
                             @Value("${agent.budget.max-estimated-cost:0}") double maxEstimatedCost) {
         this.deepSeekUtils = deepSeekUtils;
